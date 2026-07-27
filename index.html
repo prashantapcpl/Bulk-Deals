@@ -368,7 +368,8 @@ function App(){
   /* --- books I belong to --- */
   useEffect(()=>{
     if(!user) return;
-    const q=FB.query(FB.collection(db,"books"),FB.where("everyone","array-contains",user.email));
+    const myEmail=(user.email||"").trim().toLowerCase();
+    const q=FB.query(FB.collection(db,"books"),FB.where("everyone","array-contains",myEmail));
     return FB.onSnapshot(q,(s)=>{
       const list=s.docs.map(d=>({id:d.id,...d.data()}));
       setBooks(list);
@@ -387,8 +388,9 @@ function App(){
   const book=books.find(b=>b.id===bookId)||null;
   const companies=book?.companies||[];
   useEffect(()=>{ if(companies.length && !companies.some(c=>c.code===code)) setCode(companies[0].code); },[bookId,books]);
-  const isSuper = user && user.email===window.SUPER_ADMIN;
-  const canEdit = !!book && (isSuper || (book.admins||[]).includes(user?.email));
+  const myEmail = (user?.email||"").trim().toLowerCase();
+  const isSuper = !!user && myEmail===(window.SUPER_ADMIN||"").trim().toLowerCase();
+  const canEdit = !!book && (isSuper || (book.admins||[]).map(x=>String(x).toLowerCase()).includes(myEmail));
   const bookByCode=(c)=>companies.find(x=>x.code===c)||companies[0]||{code:"",name:""};
 
   /* --- writes --- */
@@ -436,7 +438,7 @@ function App(){
           if(pinTry!==pinTry2) return setErr("The two PINs are different.");
           try{
             const h=await hash(user.uid+":"+pinTry.trim());
-            await FB.setDoc(FB.doc(db,"users",user.uid),{name:myName.trim(),email:user.email,pinHash:h});
+            await FB.setDoc(FB.doc(db,"users",user.uid),{name:myName.trim(),email:myEmail,pinHash:h});
             setProfile({name:myName.trim(),pinHash:h}); sessionStorage.setItem("unlocked","1"); setUnlocked(true);
             setPinTry(""); setPinTry2(""); setErr("");
           }catch(e){ setErr(e.message); }
@@ -508,7 +510,7 @@ function App(){
       const d={...draft,id:uid(),side:"buy",batchNo:nextBatchNo(deals,draft.code),
         product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,
         qty:+draft.qty,rate:+draft.rate,book:bookByCode(draft.code).name,seller:draft.party,buyer:bookByCode(draft.code).name,
-        enteredBy:who,enteredByEmail:user.email,createdAt:new Date().toISOString(),allocations:[]};
+        enteredBy:who,enteredByEmail:myEmail,createdAt:new Date().toISOString(),allocations:[]};
       await putDeal(d); flash("Batch "+d.batchNo+" opened — "+n2(d.qty)+" t "+d.product+".");
       nextInQueue();
     }catch(e){ setErr("Could not save: "+e.message); }
@@ -523,7 +525,7 @@ function App(){
       const allocations=Object.entries(alloc).map(([batchId,q])=>({batchId,qty:+q||0})).filter(a=>a.qty>0.0001);
       const d={...draft,id:uid(),side:"sell",product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,
         qty:+draft.qty,rate:+draft.rate,book:bookByCode(draft.code).name,seller:bookByCode(draft.code).name,buyer:draft.party,
-        enteredBy:who,enteredByEmail:user.email,createdAt:new Date().toISOString(),allocations};
+        enteredBy:who,enteredByEmail:myEmail,createdAt:new Date().toISOString(),allocations};
       await putDeal(d);
       const tags=allocations.map(a=>(bts.find(b=>b.id===a.batchId)||{}).batchNo).filter(Boolean).join(", ");
       flash("Sale to "+shortName(d.party)+" booked"+(tags?" against "+tags:"")+".");
@@ -585,7 +587,7 @@ function App(){
             <h2>No book yet</h2>
             <p className="hint" style={{marginTop:6}}>
               {isSuper? "Tap your name at the top and create the first book."
-                : "Ask the admin to add "+user.email+" to a book."}</p>
+                : "Ask the admin to add "+myEmail+" to a book."}</p>
           </div>)}
 
         {book && books.length>1 && (
@@ -848,7 +850,8 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
   const [email,setEmail]=useState(""); const [bookName,setBookName]=useState("");
   const [c1,setC1]=useState("AO"); const [n1,setN1]=useState("Agarwal Overseas");
   const [c2,setC2]=useState("AP"); const [n2n,setN2]=useState("A P Chemicals P Ltd");
-  const isBookAdmin = book && (isSuper || (book.admins||[]).includes(user.email));
+  const myEmail=(user.email||"").trim().toLowerCase();
+  const isBookAdmin = book && (isSuper || (book.admins||[]).map(x=>String(x).toLowerCase()).includes(myEmail));
   const save=async(patch)=>{ try{ await FB.updateDoc(FB.doc(db,"books",book.id),patch); setNote("Saved."); }
     catch(e){ setNote(e.message); } };
   const add=async(role)=>{
@@ -876,7 +879,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
           <div key={e} style={{display:"flex",gap:8,alignItems:"center",padding:"7px 0",borderBottom:"1px dotted var(--line)"}}>
             <span style={{flex:1,minWidth:0,fontSize:13,overflow:"hidden",textOverflow:"ellipsis"}}>{e}
               <span className="eyebrow"> · {r}</span></span>
-            {e!==user.email && <button className="btn danger small" onClick={()=>remove(e)}>remove</button>}
+            {String(e).toLowerCase()!==myEmail && <button className="btn danger small" onClick={()=>remove(e)}>remove</button>}
           </div>))}
         <div style={{marginTop:10}}><F label="Add someone by email" value={email} ph="name@gmail.com" onChange={setEmail} /></div>
         <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
@@ -900,8 +903,8 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
           const companies=[{code:c1.trim().toUpperCase(),name:n1.trim()}];
           if(c2.trim()&&n2n.trim()) companies.push({code:c2.trim().toUpperCase(),name:n2n.trim()});
           try{
-            await FB.setDoc(FB.doc(db,"books",id),{name:nm,companies,owner:user.email,
-              admins:[user.email],members:[],everyone:[user.email],createdAt:new Date().toISOString()});
+            await FB.setDoc(FB.doc(db,"books",id),{name:nm,companies,owner:myEmail,
+              admins:[myEmail],members:[],everyone:[myEmail],createdAt:new Date().toISOString()});
             setBookName(""); setNote(nm+" created.");
           }catch(e){ setNote(e.message); }
         }}>Create book</button>
