@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>VA-AP Deals</title>
+<title>Bulk Deals</title>
 <meta name="theme-color" content="#14202B" />
 <link rel="manifest" href="manifest.json" />
 <link rel="apple-touch-icon" href="icon.png" />
@@ -401,11 +401,11 @@ function App(){
 
   if(!user) return (
     <div className="db">
-      <header><div className="wrap"><div className="eyebrow">Ajmera Chemsol</div><h1>VA-AP Deals</h1></div></header>
+      <header><div className="wrap"><h1>Bulk Deals</h1></div></header>
       <div className="gate">
         <div className="card">
-          <h2>Sign in</h2>
-          <p className="hint" style={{margin:"4px 0 14px"}}>Use the Google account your admin has added to the book.</p>
+          <h2>Welcome to A P Chemicals / Agarwal Overseas — Bulk Deal App</h2>
+          <p className="hint" style={{margin:"4px 0 14px"}}>Please sign in with your registered email ID to access the app.</p>
           <button className="gsi" onClick={async()=>{
             try{ await FB.signInWithPopup(auth,new FB.GoogleAuthProvider()); }
             catch(e){ try{ await FB.signInWithRedirect(auth,new FB.GoogleAuthProvider()); }catch(e2){ setErr(e2.message); } }
@@ -418,7 +418,7 @@ function App(){
   if(!profile?.pinHash) return (
     <div className="db">
       <header><div className="wrap" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div><div className="eyebrow">Ajmera Chemsol</div><h1>VA-AP Deals</h1></div>
+        <div><h1>Bulk Deals</h1></div>
         <button className="back" onClick={()=>FB.signOut(auth)}>Sign out</button></div></header>
       <div className="gate"><div className="card">
         <h2>Set your PIN</h2>
@@ -447,7 +447,7 @@ function App(){
   if(!unlocked) return (
     <div className="db">
       <header><div className="wrap" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div><div className="eyebrow">Ajmera Chemsol</div><h1>VA-AP Deals</h1></div>
+        <div><h1>Bulk Deals</h1></div>
         <button className="back" onClick={()=>FB.signOut(auth)}>Sign out</button></div></header>
       <div className="gate"><div className="card">
         <h2>Enter PIN</h2>
@@ -570,7 +570,7 @@ function App(){
           {screen!=="home" && <button className="back" onClick={back}>← Back</button>}
           <div onClick={goHome} style={{cursor:"pointer",minWidth:0}}>
             <div className="eyebrow">{book? book.name : "no book yet"} · {canEdit?"admin":"entry only"}</div>
-            <h1>VA-AP Deals</h1>
+            <h1>Bulk Deals</h1>
           </div>
         </div>
         <button className="back" onClick={()=>setPeople(true)}>{who}</button>
