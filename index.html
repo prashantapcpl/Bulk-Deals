@@ -148,6 +148,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
+const BUILD = "b2";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -447,6 +448,7 @@ function App(){
             catch(e){ try{ await FB.signInWithRedirect(auth,new FB.GoogleAuthProvider()); }catch(e2){ setErr(e2.message); } }
           }}>Continue with Google</button>
           {err && <div className="err" style={{marginTop:12}}>{err}</div>}
+          <p className="eyebrow" style={{marginTop:14,textAlign:"center"}}>build {BUILD}</p>
         </div>
       </div>
     </div>);
@@ -1116,6 +1118,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
         ? <div className="warn" style={{margin:"0 0 10px"}}>{note}</div>
         : <div className="flag" style={{margin:"0 0 10px"}}><span className="flagicon">⚑</span><div>{note}</div></div>)}
       <div className="kv"><span>Signed in</span><b>{user.email}</b></div>
+      <div className="kv"><span>App version</span><b>build {BUILD}</b></div>
       <div className="kv"><span>In this book</span><b>{isBookAdmin?"admin — can edit and delete":"can enter deals"}</b></div>
 
       {book && isBookAdmin && (<>
