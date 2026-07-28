@@ -957,7 +957,6 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen}){
   const [open,setOpen]=useState({});
   const toggle=(id)=>setOpen(o=>({...o,[id]:!o[id]}));
   const pnl=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
-  const bookProducts=[...new Set(bts.filter(inBook).map(b=>canonProduct(b.product)).filter(Boolean))].sort();
   const withSales=rows.filter(b=>salesOf(deals,b.id).length);
   const allOpen=withSales.length>0&&withSales.every(b=>open[b.id]);
   return (<>
