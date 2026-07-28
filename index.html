@@ -60,6 +60,11 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--buy);outline-off
 .hint{font-size:12.5px;color:var(--mute);line-height:1.55}
 .warn{background:#FFF8E6;border:1px solid var(--rem);padding:8px 10px;border-radius:2px;font-size:12.5px}
 .err{background:#FBEDE9;border:1px solid var(--sell);color:var(--sell);padding:8px 10px;border-radius:2px;font-size:12.5px}
+.flag{display:flex;gap:10px;align-items:flex-start;background:#FBEDE9;border:2px solid var(--sell);
+ color:var(--sell);padding:10px 12px;border-radius:2px;font-size:13px;line-height:1.5}
+.flagicon{font-size:20px;line-height:1}
+tr.mismatch td{background:#FBEDE9 !important}
+tr.mismatch td.sticky{box-shadow:inset 3px 0 0 var(--sell)}
 .good{color:var(--pos)}.bad{color:var(--sell)}
 .scrollx{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--paper);border:1px solid var(--line)}
 table{border-collapse:collapse;min-width:1040px;width:100%;font-size:12px}
@@ -183,8 +188,19 @@ const PRODUCTS = [
  {code:"Hexane",alias:["hexane"]},{code:"SBP",alias:["sbp"]},{code:"THF",alias:["thf"]},
  {code:"DMF",alias:["dmf"]},{code:"NMP",alias:["nmp"]},
 ];
-const PRODUCT_CODES = PRODUCTS.map(p=>p.code);
-const ALIASES = PRODUCTS.flatMap(p=>p.alias.map(a=>({a,code:p.code}))).sort((x,y)=>y.a.length-x.a.length);
+let EXTRA_PRODUCTS = [];                 /* short forms added in settings */
+let ALIASES = [];
+let PRODUCT_CODES = [];
+function rebuildProducts(){
+  const all=[...EXTRA_PRODUCTS,...PRODUCTS];
+  const seen=new Set(); const codes=[];
+  all.forEach(p=>{ if(!seen.has(p.code)){ seen.add(p.code); codes.push(p.code); } });
+  PRODUCT_CODES=codes;
+  ALIASES=all.flatMap(p=>(p.alias||[]).map(a=>({a:String(a).toLowerCase().trim(),code:p.code})))
+    .filter(x=>x.a).sort((x,y)=>y.a.length-x.a.length);
+}
+const setExtraProducts=(list)=>{ EXTRA_PRODUCTS=Array.isArray(list)?list:[]; rebuildProducts(); };
+rebuildProducts();
 function canonProduct(s){
   const t = prodKey(s); if(!t) return "";
   for(const {a,code} of ALIASES){
@@ -271,7 +287,8 @@ function parseStructured(text, companies){
     return { seller, buyer, ourAsSeller:ours(seller), ourAsBuyer:ours(buyer), date:grabDate(b),
       product:field(b,"product")||field(b,"material"), qty:q.max, qtyMin:q.min, qtyMax:q.max,
       rate:grabRate(field(b,"rate")||field(b,"price")), port:field(b,"port"), storage:field(b,"storage"),
-      payment:field(b,"payment"), comments:field(b,"comments")||field(b,"remark")||field(b,"delivery") };
+      payment:field(b,"payment"), broker:field(b,"broker"),
+      comments:field(b,"comments")||field(b,"remark")||field(b,"delivery") };
   });
 }
 function parseLoose(text){
@@ -292,8 +309,9 @@ function parseLoose(text){
            low.match(/(\d+(?:\.\d+)?)\s*(?:\+\s*gst|rs\b|₹)/);
   const sm=t.match(/storage\s*:?\s*([^,.;]+)/i);
   const pay=t.match(/(\d+\s*days?\s*(?:pdc|credit)[^,.;]*)/i)||t.match(/\b(advance|cash|rtgs)\b/i);
+  const bk=t.match(/broker\s*:?\s*([^,.;\n]+)/i);
   return { date:today(), party, product, qty, qtyMin, qtyMax, rate: rm?+rm[1]:0, port:canonPort(t),
-    storage: sm?sm[1].trim():"", payment: pay?pay[1]:"", comments:"" };
+    storage: sm?sm[1].trim():"", payment: pay?pay[1]:"", broker: bk?bk[1].trim():"", comments:"" };
 }
 
 /* ================= derived ================= */
@@ -391,9 +409,14 @@ function App(){
   const book=books.find(b=>b.id===bookId)||null;
   const companies=book?.companies||[];
   useEffect(()=>{ if(companies.length && !companies.some(c=>c.code===code)) setCode(companies[0].code); },[bookId,books]);
+  useEffect(()=>{ setExtraProducts(book?.products||[]); },[bookId,books]);
   const myEmail = (user?.email||"").trim().toLowerCase();
   const isSuper = !!user && myEmail===(window.SUPER_ADMIN||"").trim().toLowerCase();
-  const canEdit = !!book && (isSuper || (book.admins||[]).map(x=>String(x).toLowerCase()).includes(myEmail));
+  const lower=(a)=>(a||[]).map(x=>String(x).toLowerCase());
+  const canEdit   = !!book && (isSuper || lower(book.admins).includes(myEmail));
+  /* inputers may enter deals but never see money — admins and members see everything */
+  const canSeePnl = !!book && (isSuper || lower(book.admins).includes(myEmail) || lower(book.members).includes(myEmail));
+  const myRole = !book ? "" : canEdit ? "admin" : canSeePnl ? "member" : "inputer";
   const bookByCode=(c)=>companies.find(x=>x.code===c)||companies[0]||{code:"",name:""};
 
   /* --- writes --- */
@@ -479,7 +502,8 @@ function App(){
 
   const normalise=(r)=>({ side, code:r.code||code, date:r.date||today(), party:r.party||"",
     product:canonProduct(r.product||""), qty:r.qty||"", qtyMin:r.qtyMin||0, qtyMax:r.qtyMax||0, rate:r.rate||"",
-    port:canonPort(r.port||"")||port, storage:r.storage||"", payment:r.payment||"", comments:r.comments||"" });
+    port:canonPort(r.port||"")||port, storage:r.storage||"", payment:r.payment||"",
+    broker:r.broker||"", comments:r.comments||"" });
   const missing=(d)=>["party","product","port","qty","rate"]
     .filter(k=>!String(d?.[k]??"").trim()||((k==="qty"||k==="rate")&&!+d[k]));
 
@@ -489,7 +513,7 @@ function App(){
     const st=parseStructured(text,companies);
     if(st&&st.length){
       rows=st.map(r=>({ date:r.date, product:r.product, qty:r.qty, qtyMin:r.qtyMin, qtyMax:r.qtyMax, rate:r.rate,
-        port:r.port, storage:r.storage, payment:r.payment, comments:r.comments,
+        port:r.port, storage:r.storage, payment:r.payment, broker:r.broker, comments:r.comments,
         party: side==="buy"? r.seller : r.buyer,
         code: (side==="buy"? r.ourAsBuyer : r.ourAsSeller) || code }));
     } else { const l=parseLoose(text); rows=l?[l]:[]; }
@@ -511,7 +535,7 @@ function App(){
     if(saving) return; setSaving(true); setErr("");
     try{
       const d={...draft,id:uid(),side:"buy",batchNo:nextBatchNo(deals,draft.code),
-        product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,
+        product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,broker:draft.broker||"",
         qty:+draft.qty,rate:+draft.rate,book:bookByCode(draft.code).name,seller:draft.party,buyer:bookByCode(draft.code).name,
         enteredBy:who,enteredByEmail:myEmail,createdAt:new Date().toISOString(),allocations:[]};
       await putDeal(d); flash("Batch "+d.batchNo+" opened — "+n2(d.qty)+" t "+d.product+".");
@@ -526,7 +550,7 @@ function App(){
     if(saving) return; setSaving(true); setErr("");
     try{
       const allocations=Object.entries(alloc).map(([batchId,q])=>({batchId,qty:+q||0})).filter(a=>a.qty>0.0001);
-      const d={...draft,id:uid(),side:"sell",product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,
+      const d={...draft,id:uid(),side:"sell",product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,broker:draft.broker||"",
         qty:+draft.qty,rate:+draft.rate,book:bookByCode(draft.code).name,seller:bookByCode(draft.code).name,buyer:draft.party,
         enteredBy:who,enteredByEmail:myEmail,createdAt:new Date().toISOString(),allocations};
       await putDeal(d);
@@ -544,6 +568,47 @@ function App(){
     try{ await patchDeal({id:sale.id,allocations:merged}); setSheet(null);
       flash("Moved "+n2(moved)+" t to "+(bts.find(b=>b.id===toId)||{}).batchNo+"."); }
     catch(e){ setErr(e.message); }
+  };
+
+  /* each book belongs to one broker — flag a deal pasted into the wrong book */
+  const brokerList=(book?.brokers||[]).map(x=>normCo(x)).filter(Boolean);
+  const brokerMismatch=(d)=>{
+    if(!brokerList.length) return "";                 // book has no broker set yet
+    const t=normCo(d?.broker||""); if(!t) return "";  // nothing written on the paste
+    const ok=brokerList.some(x=> t.includes(x)||x.includes(t));
+    return ok ? "" : (d.broker||"").trim();
+  };
+
+  /* everything worth stopping the person for, gathered in one place */
+  const entryFlags=(d)=>{
+    const out=[]; if(!d||!book) return out;
+    const wrongBk=brokerMismatch(d);
+    if(wrongBk) out.push({t:"Wrong book",m:"This confirmation names "+wrongBk+" as broker, but "+book.name+" is "
+      +(book.brokers||[]).join(" / ")+". It probably belongs in another book."});
+    const dupe=findDuplicate(deals,d);
+    if(dupe) out.push({t:"Possible duplicate",m:(dupe.batchNo?dupe.batchNo+" · ":"")+shortName(dupe.party)+" — "
+      +dmy(dupe.date)+", "+n2(dupe.qty)+" t "+dupe.product+" @ ₹"+n2(dupe.rate)+"/kg, entered by "+(dupe.enteredBy||"—")+"."});
+    if(d.side==="sell" && d.product && +d.qty){
+      const mine=bts.filter(b=>b.code===d.code&&b.balance>0.0001);
+      const match=mine.filter(b=>sameProduct(b.product,d.product));
+      if(!match.length) out.push({t:"No stock of this product",
+        m:"There is no open batch of "+canonProduct(d.product)+" in the "+d.code+" book. Enter the purchase first, or check the product."});
+      else {
+        const avail=match.reduce((t,b)=>t+b.balance,0);
+        if(+d.qty>avail+0.001) out.push({t:"More than we hold",
+          m:"Selling "+n2(d.qty)+" t but only "+n2(avail)+" t of "+canonProduct(d.product)+" is left in the "+d.code+" book."});
+        if(d.port && !match.some(b=>portKey(b.port)===portKey(d.port))) out.push({t:"Different port",
+          m:"No "+canonProduct(d.product)+" is lying at "+(canonPort(d.port)||d.port)+". The open batches are at "
+            +[...new Set(match.map(b=>canonPort(b.port)||b.port))].join(", ")+"."});
+      }
+    }
+    if(d.side==="buy" && d.product && d.party){
+      const same=bts.find(b=>b.code===d.code&&sameProduct(b.product,d.product)
+        &&normCo(b.party)===normCo(d.party)&&b.date===d.date);
+      if(same) out.push({t:"Same party, same day",m:same.batchNo+" is already open from "+shortName(d.party)
+        +" for "+canonProduct(d.product)+" on "+dmy(d.date)+"."});
+    }
+    return out;
   };
 
   const inBook=(x)=>filter==="all"||x.code===filter;
@@ -567,6 +632,113 @@ function App(){
   const pnl=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
   const bookProducts=[...new Set(bts.filter(inBook).map(b=>canonProduct(b.product)).filter(Boolean))].sort();
 
+  /* ---- report title describing exactly what is being shown ---- */
+  const periodLabel=()=> period.mode==="month"&&period.month
+      ? "Month of "+period.month.split("-").reverse().join("/")
+    : period.mode==="range"&&(period.from||period.to)
+      ? "Period "+(period.from?dmy(period.from):"start")+" to "+(period.to?dmy(period.to):"today")
+      : "All time";
+  const reportTitle=()=> (book?book.name:"")+" — "+(tab==="open"?"Open deals":"Closed deals");
+  const reportSub=()=> [periodLabel(), prod==="all"?"All products":prod,
+      filter==="all"?"Both firms":filter,
+      (book&&book.brokers&&book.brokers.length)?"Broker: "+book.brokers.join(" / "):"",
+      "Printed "+dmy(today())].filter(Boolean).join("  ·  ");
+
+  const saveFile=(name,text,type)=>{
+    try{
+      const blob=new Blob([text],{type:type});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob); a.download=name;
+      document.body.appendChild(a); a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
+    }catch(e){ setErr("Could not download: "+e.message); }
+  };
+
+  /* ---- Excel: a CSV file, which Excel opens directly ---- */
+  const downloadExcel=()=>{
+    const rows=tab==="open"?open:closed;
+    const q=(v)=>'"'+String(v??"").replace(/"/g,'""')+'"';
+    const head=["Batch","Co","Date","Purchase party","Product","Port","Qty t"]
+      .concat(canSeePnl?["Rate"]:[])
+      .concat(["Storage","Comments","Sale date","Sale party","Sale qty t"])
+      .concat(canSeePnl?["Sale rate","P&L Rs"]:["Balance t"]);
+    const out=[[reportTitle()].map(q).join(","),[reportSub()].map(q).join(","),"",head.map(q).join(",")];
+    rows.forEach(b=>{
+      out.push(["", b.batchNo,b.code,dmy(b.date),b.party,canonProduct(b.product),canonPort(b.port)||b.port,n2(b.qty)]
+        .slice(1).concat(canSeePnl?[n2(b.rate)]:[])
+        .concat([b.storage,b.comments,"","",""])
+        .concat(canSeePnl?["",""]:[n2(b.balance)]).map(q).join(","));
+      salesOf(deals,b.id).forEach(x=>{
+        out.push(["","","","","","",""].concat(canSeePnl?[""]:[])
+          .concat(["","",dmy(x.date),x.party,n2(x.part)])
+          .concat(canSeePnl?[n2(x.rate),Math.round((x.rate-b.rate)*x.part*1000)]:[""]).map(q).join(","));
+      });
+      if(canSeePnl) out.push(["","","","","","",""].concat([""]).concat(["","","","","", "", "batch total "+Math.round(pnl(b))]).map(q).join(","));
+    });
+    saveFile((book?book.name.replace(/[^A-Za-z0-9]+/g,"-"):"deals")+"-"+tab+"-"+today()+".csv",
+      "\ufeff"+out.join("\n"), "text/csv;charset=utf-8;");
+  };
+
+  /* ---- PDF: a print-ready page the phone or laptop saves as PDF ---- */
+  const downloadPdf=()=>{
+    const rows=tab==="open"?open:closed;
+    const esc=(v)=>String(v??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+    const totQty=rows.reduce((t,b)=>t+(+b.qty||0),0);
+    const totBuy=rows.reduce((t,b)=>t+(+b.qty||0)*1000*b.rate,0);
+    const totPnl=rows.reduce((t,b)=>t+pnl(b),0);
+    const cols = canSeePnl ? 13 : 11;
+    let body="";
+    rows.forEach(b=>{
+      body+="<tr class='b'><td>"+esc(b.batchNo)+"</td><td>"+esc(b.code)+"</td><td>"+dmy(b.date)+"</td>"
+        +"<td>"+esc(shortName(b.party))+"</td><td>"+esc(canonProduct(b.product))+"</td>"
+        +"<td>"+esc(canonPort(b.port)||b.port||"")+"</td><td class='n'>"+n2(b.qty)+"</td>"
+        +(canSeePnl?"<td class='n'>"+n2(b.rate)+"</td>":"")
+        +"<td colspan='3'>"+esc(b.storage||"")+"</td>"
+        +"<td class='n'>"+(b.balance>0.001?n2(b.balance)+" t":"closed")+"</td>"
+        +(canSeePnl?"<td class='n "+(pnl(b)>=0?"g":"r")+"'>"+esc(money(pnl(b)))+"</td>":"")+"</tr>";
+      salesOf(deals,b.id).forEach(x=>{
+        const m=(x.rate-b.rate)*x.part*1000;
+        body+="<tr><td class='i'>&#8627;</td><td colspan='"+(canSeePnl?7:6)+"'></td>"
+          +"<td>"+dmy(x.date)+"</td><td>"+esc(shortName(x.party))+"</td><td class='n'>"+n2(x.part)+"</td>"
+          +(canSeePnl?"<td class='n'>"+n2(x.rate)+"</td><td class='n "+(m>=0?"g":"r")+"'>"+esc(money(m))+"</td>":"<td></td>")
+          +"</tr>";
+      });
+    });
+    const html="<!doctype html><html><head><meta charset='utf-8'><title>"+esc(reportTitle())+"</title><style>"
+      +"@page{size:A4 landscape;margin:12mm}"
+      +"body{font-family:Helvetica,Arial,sans-serif;color:#14202B;margin:0}"
+      +"h1{font-size:16pt;margin:0 0 2px}.sub{font-size:8pt;color:#6C7885;margin-bottom:10px}"
+      +".sum{width:100%;border-collapse:collapse;margin-bottom:10px}"
+      +".sum th{background:#14202B;color:#fff;font-size:7pt;letter-spacing:.06em;text-transform:uppercase;padding:5px}"
+      +".sum td{background:#F2F5F8;text-align:center;font-size:12pt;font-weight:bold;padding:6px;border:.5px solid #CDD6DE}"
+      +"table.d{width:100%;border-collapse:collapse}"
+      +"table.d th{background:#14202B;color:#fff;font-size:6.5pt;text-transform:uppercase;padding:4px;text-align:left}"
+      +"table.d td{font-size:7.5pt;padding:3.5px 4px;border:.4px solid #CDD6DE}"
+      +"tr.b td{background:#F2F5F8;font-weight:bold;border-top:1pt solid #14202B}"
+      +".n{text-align:right}.i{color:#6C7885}.g{color:#17795E}.r{color:#B4432B}"
+      +".ft{font-size:6.5pt;color:#6C7885;margin-top:8px}"
+      +"</style></head><body>"
+      +"<h1>"+esc(reportTitle())+"</h1><div class='sub'>"+esc(reportSub())+"</div>"
+      +"<table class='sum'><tr><th>Batches</th><th>Quantity</th>"
+      +(canSeePnl?"<th>Purchase value</th><th>Profit / loss</th>":"")+"</tr><tr>"
+      +"<td>"+rows.length+"</td><td>"+n2(totQty)+" t</td>"
+      +(canSeePnl?"<td>"+esc(money(totBuy))+"</td><td style='color:"+(totPnl>=0?"#17795E":"#B4432B")+"'>"
+        +esc(money(totPnl))+"</td>":"")+"</tr></table>"
+      +"<table class='d'><tr><th>Batch</th><th>Co</th><th>Date</th><th>Purchase party</th><th>Product</th>"
+      +"<th>Port</th><th class='n'>Qty t</th>"+(canSeePnl?"<th class='n'>Rate</th>":"")
+      +"<th colspan='3'>Storage</th><th class='n'>Balance</th>"+(canSeePnl?"<th class='n'>P&amp;L</th>":"")+"</tr>"
+      +body+"</table>"
+      +"<div class='ft'>Rates are Rs per kg. Profit and loss is the sale rate less the purchase rate of the batch "
+      +"the quantity came from. Generated from Bulk Deals.</div></body></html>";
+    const f=document.createElement("iframe");
+    f.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+    document.body.appendChild(f);
+    const d=f.contentWindow.document; d.open(); d.write(html); d.close();
+    setTimeout(()=>{ try{ f.contentWindow.focus(); f.contentWindow.print(); }
+      catch(e){ setErr("Could not open the print view: "+e.message); }
+      setTimeout(()=>f.remove(),1500); },400);
+  };
+
   const csv=()=>{
     const q=(v)=>'"'+String(v??"").replace(/"/g,'""')+'"';
     const lines=[["side","batch","company","date","party","product","port","qty_ton","rate_per_kg","storage","payment","comments","entered_by","taken_from"].join(",")];
@@ -583,7 +755,7 @@ function App(){
         <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
           {screen!=="home" && <button className="back" onClick={back}>← Back</button>}
           <div onClick={goHome} style={{cursor:"pointer",minWidth:0}}>
-            <div className="eyebrow">{book? book.name : "no book yet"} · {canEdit?"admin":"entry only"}</div>
+            <div className="eyebrow">{book? book.name : "no book yet"}{book?" · "+myRole:""}</div>
             <h1>Bulk Deals</h1>
           </div>
         </div>
@@ -625,6 +797,8 @@ function App(){
             {[["all","Both"],...companies.map(c=>[c.code,c.code])].map(([k,l])=>(
               <button key={k} className="btn ghost small" style={k===filter?{background:"var(--ink)",color:"#fff"}:{}}
                 onClick={()=>setFilter(k)}>{l}</button>))}
+            <button className="btn ghost small" onClick={downloadPdf}>PDF</button>
+            <button className="btn ghost small" onClick={downloadExcel}>Excel</button>
             <button className="btn ghost small" onClick={()=>setDump({kind:"csv",text:csv()})}>Backup</button>
             <span className="eyebrow">{tab==="open"? n2(inTank)+" t in tank" : closed.length+" closed"} · live</span>
           </div>
@@ -665,13 +839,14 @@ function App(){
               <div style={{marginTop:12}}>
                 <div className="kv"><span>Batches closed{prod==="all"?"":" · "+prod}</span><b>{closed.length}</b></div>
                 <div className="kv"><span>Quantity traded</span><b>{n2(closed.reduce((t,b)=>t+(+b.qty||0),0))} t</b></div>
-                <div className="kv"><span>Purchase value</span><b>{money(closed.reduce((t,b)=>t+(+b.qty||0)*1000*b.rate,0))}</b></div>
-                <div className="kv"><span>Profit / loss</span>
-                  <b className={closed.reduce((t,b)=>t+pnl(b),0)>=0?"good":"bad"}>{money(closed.reduce((t,b)=>t+pnl(b),0))}</b></div>
+                {canSeePnl && <div className="kv"><span>Purchase value</span><b>{money(closed.reduce((t,b)=>t+(+b.qty||0)*1000*b.rate,0))}</b></div>}
+                {canSeePnl && <div className="kv"><span>Profit / loss</span>
+                  <b className={closed.reduce((t,b)=>t+pnl(b),0)>=0?"good":"bad"}>{money(closed.reduce((t,b)=>t+pnl(b),0))}</b></div>}
               </div>
             </div>)}
 
-          <Ledger rows={tab==="open"?open:closed} deals={deals} canEdit={canEdit} forceOpen={terms.length>0}
+          <Ledger rows={tab==="open"?open:closed} deals={deals} canEdit={canEdit} canSeePnl={canSeePnl}
+            brokerList={brokerList} forceOpen={terms.length>0}
             empty={terms.length
               ? "Nothing matched. Try shorter pieces — “sah 57” works better than the full spelling."
               : tab==="open"?"No stock in hand. Enter a buy deal to open a batch."
@@ -726,9 +901,9 @@ function App(){
             </div>
             <h2>Check this before it goes in</h2>
             {missing(draft).length>0 && <div className="warn" style={{marginBottom:12}}>Still needed: {missing(draft).join(", ")}.</div>}
-            {(()=>{ const d=findDuplicate(deals,draft); return d? (
-              <div className="warn" style={{marginBottom:12}}><b>Possible duplicate.</b> {(d.batchNo?d.batchNo+" · ":"")}
-                {shortName(d.party)} — {dmy(d.date)}, {n2(d.qty)} t {d.product} @ ₹{n2(d.rate)}/kg, entered by {d.enteredBy||"—"}.</div>):null; })()}
+            {entryFlags(draft).map((f,i)=>(
+              <div className="flag" style={{marginBottom:10}} key={i}>
+                <span className="flagicon">⚑</span><div><b>{f.t}.</b> {f.m}</div></div>))}
 
             <p className="hint" style={{margin:"0 0 6px"}}>Our firm</p>
             <div className="books">{companies.map(c=>(
@@ -770,6 +945,10 @@ function App(){
             </div>
             <div className="row" style={{marginTop:10}}>
               <F label="Payment" value={draft.payment} ph="70 days PDC" onChange={(v)=>setDraft({...draft,payment:v})} />
+              <F label="Broker" value={draft.broker} missing={!!brokerMismatch(draft)}
+                ph={(book.brokers||[]).join(" / ")||"broker name"} onChange={(v)=>setDraft({...draft,broker:v})} />
+            </div>
+            <div style={{marginTop:10}}>
               <F label="Comments" value={draft.comments} ph="anything to remember" onChange={(v)=>setDraft({...draft,comments:v})} />
             </div>
             <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}}>
@@ -823,9 +1002,13 @@ function App(){
                     <span className="eyebrow">of {n2(b.balance)}</span></div>); })}
               </div>}
               <div className="kv" style={{marginTop:8}}><span>Taken</span><b>{n2(done)} of {n2(need)} t</b></div>
-              {left>0.001 && <div className="warn" style={{marginTop:8}}>{n2(left)} t not tied to a batch yet.</div>}
-              {left<-0.001 && <div className="err" style={{marginTop:8}}>Taken {n2(-left)} t more than the sale.</div>}
-              {done>0 && <div className="kv"><span>Margin</span>
+              {left>0.001 && <div className="flag" style={{marginTop:10}}>
+                <span className="flagicon">⚑</span><div><b>{n2(left)} t not tied to a batch.</b> Saving like this
+                leaves it showing under “sales not tied to a batch” until you attach it.</div></div>}
+              {left<-0.001 && <div className="flag" style={{marginTop:10}}>
+                <span className="flagicon">⚑</span><div><b>Taken {n2(-left)} t more than the sale.</b> Reduce the
+                quantities above before saving.</div></div>}
+              {done>0 && canSeePnl && <div className="kv"><span>Margin</span>
                 <b className={marg>=0?"good":"bad"}>{marg>=0?"+":"−"}₹{n2(Math.abs(marg))}/kg · {money(done*1000*marg)}</b></div>}
               <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
                 <button className="btn" onClick={()=>{ if(left<-0.001) return setErr("Taken more than the sale."); commitSell(); }}>
@@ -882,6 +1065,9 @@ function App(){
 /* ================= people & books ================= */
 function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSignOut}){
   const [email,setEmail]=useState(""); const [bookName,setBookName]=useState("");
+  const [reName,setReName]=useState(book?book.name:""); const [newBroker,setNewBroker]=useState("");
+  const [nbBroker,setNbBroker]=useState("");
+  const [pCode,setPCode]=useState(""); const [pAlias,setPAlias]=useState("");
   const [c1,setC1]=useState("AO"); const [n1,setN1]=useState("Agarwal Overseas");
   const [c2,setC2]=useState("AP"); const [n2n,setN2]=useState("A P Chemicals P Ltd");
   const myEmail=(user.email||"").trim().toLowerCase();
@@ -890,26 +1076,33 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
     catch(e){ setNote(e.message); } };
   const add=async(role)=>{
     const e=email.trim().toLowerCase(); if(!e.includes("@")) return setNote("Type a full email address.");
-    const admins=[...(book.admins||[])], members=[...(book.members||[])];
-    if(role==="admin"){ if(!admins.includes(e)) admins.push(e); }
-    else if(!members.includes(e)) members.push(e);
-    await save({admins,members,everyone:[...new Set([...admins,...members])]});
+    let admins=(book.admins||[]).filter(x=>x!==e),
+        members=(book.members||[]).filter(x=>x!==e),
+        inputers=(book.inputers||[]).filter(x=>x!==e);
+    if(role==="admin") admins.push(e);
+    else if(role==="member") members.push(e);
+    else inputers.push(e);
+    await save({admins,members,inputers,everyone:[...new Set([...admins,...members,...inputers])]});
     setEmail("");
   };
   const remove=async(e)=>{
-    const admins=(book.admins||[]).filter(x=>x!==e), members=(book.members||[]).filter(x=>x!==e);
-    await save({admins,members,everyone:[...new Set([...admins,...members])]});
+    const admins=(book.admins||[]).filter(x=>x!==e),
+          members=(book.members||[]).filter(x=>x!==e),
+          inputers=(book.inputers||[]).filter(x=>x!==e);
+    await save({admins,members,inputers,everyone:[...new Set([...admins,...members,...inputers])]});
   };
   return (
     <div className="sheet" onClick={(e)=>e.target.classList.contains("sheet")&&onClose()}><div className="in">
       <h2>People and books</h2>
       {note && <div className="warn" style={{margin:"0 0 10px"}}>{note}</div>}
       <div className="kv"><span>Signed in</span><b>{user.email}</b></div>
-      <div className="kv"><span>In this book</span><b>{isBookAdmin?"admin — can edit and delete":"can enter deals only"}</b></div>
+      <div className="kv"><span>In this book</span><b>{isBookAdmin?"admin — can edit and delete":"can enter deals"}</b></div>
 
       {book && isBookAdmin && (<>
         <div className="eyebrow" style={{margin:"16px 0 6px"}}>{book.name} — people</div>
-        {[...(book.admins||[]).map(e=>[e,"admin"]),...(book.members||[]).map(e=>[e,"entry only"])].map(([e,r])=>(
+        {[...(book.admins||[]).map(e=>[e,"admin — edit and delete"]),
+          ...(book.members||[]).map(e=>[e,"enter + see profit"]),
+          ...(book.inputers||[]).map(e=>[e,"enter only, no profit"])].map(([e,r])=>(
           <div key={e} style={{display:"flex",gap:8,alignItems:"center",padding:"7px 0",borderBottom:"1px dotted var(--line)"}}>
             <span style={{flex:1,minWidth:0,fontSize:13,overflow:"hidden",textOverflow:"ellipsis"}}>{e}
               <span className="eyebrow"> · {r}</span></span>
@@ -917,14 +1110,70 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
           </div>))}
         <div style={{marginTop:10}}><F label="Add someone by email" value={email} ph="name@gmail.com" onChange={setEmail} /></div>
         <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
-          <button className="btn small" onClick={()=>add("member")}>Add — entry only</button>
+          <button className="btn small" onClick={()=>add("inputer")}>Add — enter only</button>
+          <button className="btn ghost small" onClick={()=>add("member")}>Add — enter + profit</button>
           <button className="btn ghost small" onClick={()=>add("admin")}>Add as admin</button>
         </div>
+        <p className="hint" style={{marginTop:6}}>
+          <b>Enter only</b> can add deals but never sees rates or profit. <b>Enter + profit</b> sees everything and
+          can take reports. <b>Admin</b> can also change and delete deals, and manage this list.
+        </p>
+
+        <div className="eyebrow" style={{margin:"18px 0 6px"}}>Book name and broker</div>
+        <div className="row">
+          <F label="Book name" value={reName} onChange={setReName} />
+        </div>
+        <button className="btn ghost small" style={{marginTop:8}} onClick={async()=>{
+          const nm=reName.trim(); if(!nm) return setNote("Give the book a name.");
+          await save({name:nm});
+        }}>Rename book</button>
+
+        <p className="hint" style={{margin:"14px 0 6px"}}>
+          Deals pasted into this book are checked against these broker names. Add every spelling you use.</p>
+        {(book.brokers||[]).map(bk=>(
+          <div key={bk} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 0",borderBottom:"1px dotted var(--line)"}}>
+            <span style={{flex:1,fontSize:13}}>{bk}</span>
+            <button className="btn danger small" onClick={()=>save({brokers:(book.brokers||[]).filter(x=>x!==bk)})}>remove</button>
+          </div>))}
+        <div className="row" style={{marginTop:8}}>
+          <F label="Add broker name" value={newBroker} ph="Ajmera Chemsol / Vijay Ajmera" onChange={setNewBroker} />
+        </div>
+        <button className="btn ghost small" style={{marginTop:8}} onClick={async()=>{
+          const bk=newBroker.trim(); if(!bk) return setNote("Type a broker name.");
+          if((book.brokers||[]).includes(bk)) return setNote("Already listed.");
+          await save({brokers:[...(book.brokers||[]),bk]}); setNewBroker("");
+        }}>Add broker</button>
+
+        <div className="eyebrow" style={{margin:"18px 0 6px"}}>Product short forms</div>
+        <p className="hint" style={{margin:"0 0 8px"}}>
+          Methanol, PG, NBA, BA, Cyclo, Xylene, MEK, MIBK and the rest are built in. Add anything you trade that
+          is missing, with every long name you might paste, so it always saves under the short form.</p>
+        {(book.products||[]).map((pr,i)=>(
+          <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 0",borderBottom:"1px dotted var(--line)"}}>
+            <span style={{flex:1,minWidth:0,fontSize:13}}><b>{pr.code}</b>
+              <span className="eyebrow"> · {(pr.alias||[]).join(", ")}</span></span>
+            <button className="btn danger small"
+              onClick={()=>save({products:(book.products||[]).filter((_,j)=>j!==i)})}>remove</button>
+          </div>))}
+        <div className="row" style={{marginTop:8}}>
+          <F label="Short form" value={pCode} ph="SBP" onChange={setPCode} />
+          <F label="Long names, comma separated" value={pAlias} ph="special boiling point spirit, sbp 62" onChange={setPAlias} />
+        </div>
+        <button className="btn ghost small" style={{marginTop:8}} onClick={async()=>{
+          const c=pCode.trim(); if(!c) return setNote("Type the short form.");
+          const al=[c,...pAlias.split(",").map(x=>x.trim()).filter(Boolean)];
+          if((book.products||[]).some(x=>x.code.toLowerCase()===c.toLowerCase())) return setNote(c+" is already listed.");
+          await save({products:[...(book.products||[]),{code:c,alias:al}]});
+          setPCode(""); setPAlias("");
+        }}>Add product</button>
       </>)}
 
       {isSuper && (<>
         <div className="eyebrow" style={{margin:"18px 0 6px"}}>New book for another group</div>
-        <F label="Book name" value={bookName} ph="VA-XY Deals" onChange={setBookName} />
+        <F label="Book name" value={bookName} ph="BKM - AP Deals" onChange={setBookName} />
+        <div style={{marginTop:8}}>
+          <F label="Broker this book belongs to" value={nbBroker} ph="Bharat K Mehta" onChange={setNbBroker} />
+        </div>
         <div className="row" style={{marginTop:8}}>
           <F label="Code 1" value={c1} onChange={setC1} /><F label="Firm 1" value={n1} onChange={setN1} />
         </div>
@@ -934,12 +1183,13 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
         <button className="btn small" style={{marginTop:10}} onClick={async()=>{
           const nm=bookName.trim(); if(!nm) return setNote("Give the book a name.");
           const id=nm.toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,30)+"-"+Date.now().toString(36).slice(-4);
+          const bk=nbBroker.trim(); if(!bk) return setNote("Give the broker this book belongs to.");
           const companies=[{code:c1.trim().toUpperCase(),name:n1.trim()}];
           if(c2.trim()&&n2n.trim()) companies.push({code:c2.trim().toUpperCase(),name:n2n.trim()});
           try{
-            await FB.setDoc(FB.doc(db,"books",id),{name:nm,companies,owner:myEmail,
-              admins:[myEmail],members:[],everyone:[myEmail],createdAt:new Date().toISOString()});
-            setBookName(""); setNote(nm+" created.");
+            await FB.setDoc(FB.doc(db,"books",id),{name:nm,companies,brokers:[bk],owner:myEmail,
+              admins:[myEmail],members:[],inputers:[],everyone:[myEmail],createdAt:new Date().toISOString()});
+            setBookName(""); setNbBroker(""); setNote(nm+" created.");
           }catch(e){ setNote(e.message); }
         }}>Create book</button>
       </>)}
@@ -953,10 +1203,15 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
 }
 
 /* ================= ledger ================= */
-function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen}){
+function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList}){
   const [open,setOpen]=useState({});
   const toggle=(id)=>setOpen(o=>({...o,[id]:!o[id]}));
   const pnl=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
+  const wrongBroker=(d)=>{
+    const list=(brokerList||[]); if(!list.length) return false;
+    const t=normCo(d.broker||""); if(!t) return false;
+    return !list.some(x=> t.includes(x)||x.includes(t));
+  };
   const withSales=rows.filter(b=>salesOf(deals,b.id).length);
   const allOpen=withSales.length>0&&withSales.every(b=>open[b.id]);
   return (<>
@@ -966,39 +1221,47 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen}){
     <div className="scrollx"><table>
       <thead><tr>
         <th className="sticky">Batch</th><th>Co</th><th>Date</th><th>Purchase party</th><th>Product</th><th>Port</th>
-        <th style={{textAlign:"right"}}>Qty</th><th style={{textAlign:"right"}}>Rate</th><th>Storage</th><th>Comments</th>
-        <th>Sale date</th><th>Sale party</th><th style={{textAlign:"right"}}>Qty</th><th style={{textAlign:"right"}}>Rate</th>
-        <th style={{textAlign:"right"}}>Balance / P&amp;L</th>
+        <th style={{textAlign:"right"}}>Qty</th>{canSeePnl && <th style={{textAlign:"right"}}>Rate</th>}
+        <th>Storage</th><th>Comments</th>
+        <th>Sale date</th><th>Sale party</th><th style={{textAlign:"right"}}>Qty</th>
+        {canSeePnl && <th style={{textAlign:"right"}}>Rate</th>}
+        <th style={{textAlign:"right"}}>{canSeePnl?"Balance / P&L":"Balance"}</th>
       </tr></thead>
       <tbody>
-        {rows.length===0 && <tr><td colSpan={15} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>{empty}</td></tr>}
+        {rows.length===0 && <tr><td colSpan={canSeePnl?15:13} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>{empty}</td></tr>}
         {rows.map(b=>{
           const sales=salesOf(deals,b.id); const isOpen=forceOpen||!!open[b.id];
           return (<Fragment key={b.id}>
-            <tr className="batch" onClick={()=>sales.length&&toggle(b.id)} style={{cursor:sales.length?"pointer":"default"}}>
-              <td className="sticky"><span style={{color:sales.length?"var(--buy)":"transparent",marginRight:4}}>{isOpen?"▾":"▸"}</span>{b.batchNo}</td>
+            <tr className={"batch"+(wrongBroker(b)?" mismatch":"")} onClick={()=>sales.length&&toggle(b.id)}
+              style={{cursor:sales.length?"pointer":"default"}} title={wrongBroker(b)?"Broker does not match this book":""}>
+              <td className="sticky"><span style={{color:sales.length?"var(--buy)":"transparent",marginRight:4}}>{isOpen?"▾":"▸"}</span>
+                {wrongBroker(b) && <span className="bad" title="wrong broker for this book">⚑ </span>}{b.batchNo}</td>
               <td>{b.code}</td><td className="mono">{dmy(b.date)}</td>
               <td title={b.party}>{shortName(b.party)}</td>
               <td>{canonProduct(b.product)}</td><td>{canonPort(b.port)||b.port||"—"}</td>
-              <td className="num">{n2(b.qty)}</td><td className="num">{n2(b.rate)}</td>
+              <td className="num">{n2(b.qty)}</td>{canSeePnl && <td className="num">{n2(b.rate)}</td>}
               <td style={{fontWeight:400}}>{b.storage||"—"}</td>
               <td style={{fontWeight:400}} title={b.comments}>{(b.comments||"—").slice(0,20)}</td>
               <td colSpan={4} style={{fontWeight:400,color:"var(--mute)"}}>
-                {sales.length? <>{sales.length+" sale"+(sales.length>1?"s":"")+" · "+n2(b.sold)+" t sold · "}
-                  <span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span>{isOpen?"":" — tap to open"}</> : "no sale yet"}
+                {sales.length? <>{sales.length+" sale"+(sales.length>1?"s":"")+" · "+n2(b.sold)+" t sold"}
+                  {canSeePnl && <> · <span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span></>}
+                  {isOpen?"":" — tap to open"}</> : "no sale yet"}
                 {canEdit && <button className="iconbtn" style={{marginLeft:8}} onClick={(e)=>{e.stopPropagation();onBatch(b);}}>e</button>}
               </td>
               {b.balance>0.001
                 ? <td className="bal" style={{color:"#8A6D0B"}}>{n2(b.balance)} t</td>
-                : <td className="bal"><span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span>
-                    <div className="eyebrow">{b.sold>0? "₹"+n2(pnl(b)/(b.sold*1000))+"/kg" : "closed"}</div></td>}
+                : canSeePnl
+                  ? <td className="bal"><span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span>
+                      <div className="eyebrow">{b.sold>0? "₹"+n2(pnl(b)/(b.sold*1000))+"/kg" : "closed"}</div></td>
+                  : <td className="bal" style={{color:"var(--mute)"}}>0 t</td>}
             </tr>
             {isOpen && sales.map(s=>{ const m=s.rate-b.rate; return (
               <tr className="sale" key={s.id+b.id}>
                 <td className="sticky ind">↳</td><td /><td colSpan={8} />
                 <td className="mono">{dmy(s.date)}</td><td title={s.party}>{shortName(s.party)}</td>
-                <td className="num">{n2(s.part)}</td><td className="num">{n2(s.rate)}</td>
-                <td className="bal"><span className={m>=0?"good":"bad"}>{m>=0?"+":"−"}{n2(Math.abs(m))}</span>
+                <td className="num">{n2(s.part)}</td>{canSeePnl && <td className="num">{n2(s.rate)}</td>}
+                <td className="bal">
+                  {canSeePnl && <span className={m>=0?"good":"bad"}>{m>=0?"+":"−"}{n2(Math.abs(m))}</span>}
                   {canEdit && <button className="iconbtn" style={{marginLeft:6}} onClick={()=>onSale(s,b.id)}>e</button>}</td>
               </tr>); })}
           </Fragment>); })}
