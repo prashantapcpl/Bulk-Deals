@@ -21,9 +21,14 @@ html,body{margin:0;padding:0;background:#E5EAEF}
 header{background:var(--ink);color:#fff;padding:10px 0}
 header .eyebrow{color:#8FA6B8}
 h1{font-size:19px;font-weight:700;letter-spacing:-.02em;margin:2px 0 0}
-h2{font-size:16px;margin:0 0 8px;font-weight:600}
-.back{background:transparent;border:1px solid #46596B;color:#fff;border-radius:2px;padding:7px 11px;cursor:pointer;
- font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
+h2{font-size:20px;margin:0 0 10px;font-weight:700;letter-spacing:-.02em}
+.sech{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+ color:var(--ink);background:#EAEFF4;border-left:3px solid var(--buy);padding:7px 10px;margin:18px 0 10px}
+.card>h2:first-child{border-bottom:2px solid var(--line);padding-bottom:8px}
+.back{background:#6E2639;border:1px solid #8A3149;color:#fff;border-radius:3px;padding:8px 13px;cursor:pointer;
+ font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;
+ font-weight:600}
+.back:hover{background:#8A3149}
 .card{background:var(--paper);border:1px solid var(--line);border-radius:2px;padding:14px;margin:12px 0}
 .big{display:flex;gap:12px;margin:14px 0}
 .big button{flex:1;padding:20px 12px;border:1px solid var(--ink);border-radius:2px;cursor:pointer;text-align:left}
@@ -80,8 +85,11 @@ td.bal{font-family:'IBM Plex Mono',monospace;text-align:right;font-weight:600}
 td.sticky,th.sticky{position:sticky;left:0;z-index:2}
 tr.batch td.sticky{background:#E9EEF3}tr.sale td.sticky{background:var(--paper)}
 th.sticky{z-index:3;background:var(--ink)}
-.pill{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
- padding:1px 5px;border:1px solid currentColor;border-radius:2px}
+.pill{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:600;letter-spacing:.1em;
+ text-transform:uppercase;padding:7px 14px;border-radius:3px;background:var(--buy);color:#fff !important;
+ border:1px solid var(--buy)}
+.pill.sell{background:var(--sell);border-color:var(--sell)}
+.pill.batch{background:#fff;color:var(--buy) !important;border:2px solid var(--buy)}
 .pick{display:flex;gap:10px;align-items:center;width:100%;text-align:left;padding:12px;border:1px solid var(--line);
  background:#FBFCFD;border-radius:2px;margin-bottom:8px;cursor:pointer}
 .pick[data-on="1"]{border-color:var(--buy);background:#EEF4FA;box-shadow:inset 3px 0 0 var(--buy)}
@@ -148,7 +156,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
-const BUILD = "b2";   /* shown on the sign-in screen and in settings */
+const BUILD = "b4";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -513,7 +521,7 @@ function App(){
   const normalise=(r)=>({ side, code:r.code||code, date:r.date||today(), party:r.party||"",
     product:canonProduct(r.product||""), qty:r.qty||"", qtyMin:r.qtyMin||0, qtyMax:r.qtyMax||0, rate:r.rate||"",
     port:canonPort(r.port||"")||port, storage:r.storage||"", payment:r.payment||"",
-    broker:r.broker||"", comments:r.comments||"" });
+    broker:r.broker||"", comm:r.comm||"", comments:r.comments||"" });
   const missing=(d)=>["party","product","port","qty","rate"]
     .filter(k=>!String(d?.[k]??"").trim()||((k==="qty"||k==="rate")&&!+d[k]));
 
@@ -553,6 +561,7 @@ function App(){
     try{
       const d={...draft,id:uid(),side:"buy",batchNo:nextBatchNo(deals,draft.code),
         product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,broker:draft.broker||"",
+        comm:+draft.comm||0,
         qty:+draft.qty,rate:+draft.rate,book:bookByCode(draft.code).name,seller:draft.party,buyer:bookByCode(draft.code).name,
         enteredBy:who,enteredByEmail:myEmail,createdAt:new Date().toISOString(),allocations:[]};
       await putDeal(d); flash("Batch "+d.batchNo+" opened — "+n2(d.qty)+" t "+d.product+".");
@@ -567,7 +576,7 @@ function App(){
     if(saving) return; setSaving(true); setErr("");
     try{
       const allocations=Object.entries(alloc).map(([batchId,q])=>({batchId,qty:+q||0})).filter(a=>a.qty>0.0001);
-      const d={...draft,id:uid(),side:"sell",product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,broker:draft.broker||"",
+      const d={...draft,id:uid(),side:"sell",product:canonProduct(draft.product),port:canonPort(draft.port)||draft.port,broker:draft.broker||"",comm:+draft.comm||0,
         qty:+draft.qty,rate:+draft.rate,book:bookByCode(draft.code).name,seller:bookByCode(draft.code).name,buyer:draft.party,
         enteredBy:who,enteredByEmail:myEmail,createdAt:new Date().toISOString(),allocations};
       await putDeal(d);
@@ -646,7 +655,26 @@ function App(){
   const closed=bts.filter(b=>inBook(b)&&b.balance<=0.001&&inPeriod(b)&&inProduct(b)&&matches(b));
   const loose=deals.filter(d=>d.side==="sell"&&allocTotal(d)+0.001<(+d.qty||0)).filter(inBook);
   const inTank=open.reduce((s,b)=>s+b.balance,0);
-  const pnl=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
+  /* every deal carrying a commission, buy or sell, newest first */
+  const commRows=deals.filter(d=>Math.abs(+d.comm||0)>0).filter(inBook)
+    .filter(d=> prod==="all"||sameProduct(d.product,prod))
+    .filter(d=>{
+      if(period.mode==="month"&&period.month) return String(d.date).slice(0,7)===period.month;
+      if(period.mode==="range"){ if(period.from&&d.date<period.from) return false;
+        if(period.to&&d.date>period.to) return false; }
+      return true;
+    })
+    .filter(d=>!terms.length||hit(dealText(d)))
+    .sort((a,b)=> a.date<b.date?1:-1);
+  const commTotal=commRows.reduce((t,d)=>t+(+d.comm||0)*(+d.qty||0)*1000,0);
+  /* Commission per kg, signed by direction of money:
+       +5  we RECEIVE 5/kg  -> adds to profit
+       -2  we PAY 2/kg      -> reduces profit
+     Works the same on a purchase or a sale.  */
+  const commOf=(d,qty)=> (+d.comm||0) * (qty!==undefined?qty:(+d.qty||0)) * 1000;
+  const commBatch=(b)=> commOf(b) + salesOf(deals,b.id).reduce((t,x)=>t+commOf(x,x.part),0);
+  const margin=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
+  const pnl=(b)=>margin(b)+commBatch(b);
   const bookProducts=[...new Set(bts.filter(inBook).map(b=>canonProduct(b.product)).filter(Boolean))].sort();
 
   /* ---- report title describing exactly what is being shown ---- */
@@ -808,6 +836,7 @@ function App(){
           <div className="tabs">
             <button data-on={tab==="open"?"1":"0"} onClick={()=>setTab("open")}>Open deals ({open.length})</button>
             <button data-on={tab==="closed"?"1":"0"} onClick={()=>setTab("closed")}>Closed deals ({closed.length})</button>
+            {canSeePnl && <button data-on={tab==="comm"?"1":"0"} onClick={()=>setTab("comm")}>Commission ({commRows.length})</button>}
           </div>
 
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10,alignItems:"center"}}>
@@ -830,7 +859,7 @@ function App(){
             {terms.map(t=>" “"+t+"”").join(" and")} — batches and their sales are both searched.
           </p>}
 
-          {tab==="closed" && (
+          {(tab==="closed"||tab==="comm") && (
             <div className="card" style={{marginTop:0}}>
               <p className="hint" style={{margin:"0 0 6px"}}>Product</p>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
@@ -853,22 +882,70 @@ function App(){
                 <label><span>From</span><input type="date" value={period.from} onChange={(e)=>setPeriod({...period,from:e.target.value})} /></label>
                 <label><span>To</span><input type="date" value={period.to} onChange={(e)=>setPeriod({...period,to:e.target.value})} /></label>
               </div>}
-              <div style={{marginTop:12}}>
+              {tab==="closed" && <div style={{marginTop:12}}>
                 <div className="kv"><span>Batches closed{prod==="all"?"":" · "+prod}</span><b>{closed.length}</b></div>
                 <div className="kv"><span>Quantity traded</span><b>{n2(closed.reduce((t,b)=>t+(+b.qty||0),0))} t</b></div>
                 {canSeePnl && <div className="kv"><span>Purchase value</span><b>{money(closed.reduce((t,b)=>t+(+b.qty||0)*1000*b.rate,0))}</b></div>}
-                {canSeePnl && <div className="kv"><span>Profit / loss</span>
+                {canSeePnl && <div className="kv"><span>Trading margin</span>
+                  <b className={closed.reduce((t,b)=>t+margin(b),0)>=0?"good":"bad"}>{money(closed.reduce((t,b)=>t+margin(b),0))}</b></div>}
+                {canSeePnl && <div className="kv"><span>Commission</span>
+                  <b className={closed.reduce((t,b)=>t+commBatch(b),0)>=0?"good":"bad"}>
+                    {money(closed.reduce((t,b)=>t+commBatch(b),0))}</b></div>}
+                {canSeePnl && <div className="kv"><span><b>Profit / loss</b></span>
                   <b className={closed.reduce((t,b)=>t+pnl(b),0)>=0?"good":"bad"}>{money(closed.reduce((t,b)=>t+pnl(b),0))}</b></div>}
-              </div>
+              </div>}
             </div>)}
 
-          <Ledger rows={tab==="open"?open:closed} deals={deals} canEdit={canEdit} canSeePnl={canSeePnl}
+          {tab==="comm" && (
+            <div className="card">
+              <h2>Commission</h2>
+              <p className="hint" style={{margin:"0 0 12px"}}>
+                Every deal carrying a commission, on purchases and sales alike. A plus is money coming to us and
+                adds to profit; a minus is money we pay and comes off it.</p>
+              <div className="scrollx">
+                <table style={{minWidth:760}}>
+                  <thead><tr>
+                    <th className="sticky">Date</th><th>Side</th><th>Co</th><th>Party</th><th>Product</th>
+                    <th style={{textAlign:"right"}}>Qty t</th><th style={{textAlign:"right"}}>₹/kg</th>
+                    <th style={{textAlign:"right"}}>Amount</th><th>From</th>
+                  </tr></thead>
+                  <tbody>
+                    {commRows.length===0 && <tr><td colSpan={9} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>
+                      No commission recorded in this period.</td></tr>}
+                    {commRows.map(d=>(
+                      <tr key={d.id} className="sale">
+                        <td className="sticky mono">{dmy(d.date)}</td>
+                        <td><span className={d.side==="buy"?"":"bad"}>{d.side}</span></td>
+                        <td>{d.code}</td>
+                        <td title={d.party}>{shortName(d.party)}</td>
+                        <td>{canonProduct(d.product)}</td>
+                        <td className="num">{n2(d.qty)}</td>
+                        <td className={"num "+((+d.comm||0)>=0?"good":"bad")}>
+                          {(+d.comm||0)>=0?"+":"−"}{n2(Math.abs(+d.comm||0))}</td>
+                        <td className={"bal "+((+d.comm||0)>=0?"good":"bad")}>
+                          {money((+d.comm||0)*(+d.qty||0)*1000)}</td>
+                        <td style={{color:"var(--mute)"}}>
+                          {(+d.comm||0)>=0 ? "receive from "+(d.side==="buy"?"seller":"buyer")
+                                           : "pay to "+(d.side==="buy"?"seller":"buyer")}</td>
+                      </tr>))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="kv" style={{marginTop:12}}><span>Receivable</span>
+                <b className="good">{money(commRows.reduce((t,d)=>t+Math.max((+d.comm||0)*(+d.qty||0)*1000,0),0))}</b></div>
+              <div className="kv"><span>Payable</span>
+                <b className="bad">{money(commRows.reduce((t,d)=>t+Math.min((+d.comm||0)*(+d.qty||0)*1000,0),0))}</b></div>
+              <div className="kv"><span><b>Net commission</b></span>
+                <b className={commTotal>=0?"good":"bad"}>{money(commTotal)}</b></div>
+            </div>)}
+
+          {tab!=="comm" && <Ledger rows={tab==="open"?open:closed} deals={deals} canEdit={canEdit} canSeePnl={canSeePnl}
             brokerList={brokerList} forceOpen={terms.length>0}
             empty={terms.length
               ? "Nothing matched. Try shorter pieces — “sah 57” works better than the full spelling."
               : tab==="open"?"No stock in hand. Enter a buy deal to open a batch."
                 : prod==="all"?"Nothing closed in this period.":"No "+prod+" closed in this period."}
-            onBatch={(b)=>setSheet({batch:b})} onSale={(s,fromId)=>setSheet({sale:s,fromId})} />
+            onBatch={(b)=>setSheet({batch:b})} onSale={(s,fromId)=>setSheet({sale:s,fromId})} />}
 
           {tab==="open" && loose.length>0 && (
             <div className="card" style={{borderColor:"var(--sell)"}}>
@@ -884,13 +961,13 @@ function App(){
         {/* ---------- ENTRY ---------- */}
         {book && screen==="entry" && (
           <div className="card">
-            <div className="crumb"><span className="pill" style={{color:side==="buy"?"var(--buy)":"var(--sell)"}}>{side} deal</span></div>
+            <div className="crumb"><span className={"pill"+(side==="sell"?" sell":"")}>{side} deal</span></div>
             <h2>{side==="buy"?"What did we buy?":"What did we sell?"}</h2>
-            <p className="hint" style={{margin:"0 0 8px"}}>Which of our firms is this for?</p>
+            <div className="sech">Which of our firms is this for?</div>
             <div className="books">{companies.map(c=>(
               <button key={c.code} data-on={code===c.code?"1":"0"} onClick={()=>setCode(c.code)}>
                 <span className="c">{c.code}</span><span className="n">{c.name}</span></button>))}</div>
-            <p className="hint" style={{margin:"12px 0 6px"}}>Port</p>
+            <div className="sech">Port</div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {PORTS.map(pt=>(<button key={pt} className="btn ghost small"
                 style={port===pt?{background:"var(--ink)",color:"#fff"}:{}}
@@ -912,8 +989,8 @@ function App(){
         {book && screen==="confirm" && draft && (
           <div className="card">
             <div className="crumb">
-              <span className="pill" style={{color:draft.side==="buy"?"var(--buy)":"var(--sell)"}}>{draft.side} deal</span>
-              {draft.side==="buy" && <span className="pill">batch {nextBatchNo(deals,draft.code)}</span>}
+              <span className={"pill"+(draft.side==="sell"?" sell":"")}>{draft.side} deal</span>
+              {draft.side==="buy" && <span className="pill batch">batch {nextBatchNo(deals,draft.code)}</span>}
               {queue.length>0 && <span className="eyebrow">{queue.length} more to confirm</span>}
             </div>
             <h2>Check this before it goes in</h2>
@@ -924,7 +1001,7 @@ function App(){
               <div className="flag" style={{marginBottom:10}} key={i}>
                 <span className="flagicon">⚑</span><div><b>{f.t}.</b> {f.m}</div></div>))}
 
-            <p className="hint" style={{margin:"0 0 6px"}}>Our firm</p>
+            <div className="sech">Our firm</div>
             <div className="books">{companies.map(c=>(
               <button key={c.code} data-on={draft.code===c.code?"1":"0"} onClick={()=>setDraft({...draft,code:c.code})}>
                 <span className="c">{c.code}</span><span className="n">{c.name}</span></button>))}</div>
@@ -944,7 +1021,7 @@ function App(){
                 style={canonProduct(draft.product)===p?{background:"var(--ink)",color:"#fff"}:{}}
                 onClick={()=>setDraft({...draft,product:p})}>{p}</button>))}
             </div>
-            <p className="hint" style={{margin:"12px 0 4px"}}>Port{missing(draft).includes("port")?" · needed":""}</p>
+            <div className="sech" style={{color:missing(draft).includes("port")?"var(--sell)":"var(--ink)"}}>Port{missing(draft).includes("port")?" · needed":""}</div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {PORTS.map(pt=>(<button key={pt} className="btn ghost small"
                 style={canonPort(draft.port)===pt?{background:"var(--ink)",color:"#fff"}:{}}
@@ -967,9 +1044,17 @@ function App(){
               <F label="Broker" value={draft.broker} missing={!!brokerMismatch(draft)}
                 ph={(book.brokers||[]).join(" / ")||"broker name"} onChange={(v)=>setDraft({...draft,broker:v})} />
             </div>
-            <div style={{marginTop:10}}>
+            <div className="row" style={{marginTop:10}}>
+              <F label="Commission ₹/kg — + take, − give" value={draft.comm} ph="0"
+                onChange={(v)=>setDraft({...draft,comm:v})} />
               <F label="Comments" value={draft.comments} ph="anything to remember" onChange={(v)=>setDraft({...draft,comments:v})} />
             </div>
+            {!!(+draft.comm) && (()=>{ const c=+draft.comm, amt=c*(+draft.qty||0)*1000;
+              const who=draft.side==="buy"?(shortName(draft.party)||"the seller"):(shortName(draft.party)||"the buyer");
+              return <p className="hint" style={{marginTop:6}}>
+                {c>0 ? <>₹{n2(c)}/kg <b>receivable from</b> {who} — <b className="good">{money(amt)}</b> added to profit.</>
+                     : <>₹{n2(-c)}/kg <b>payable to</b> {who} — <b className="bad">{money(amt)}</b> off the profit.</>}
+              </p>; })()}
             <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}}>
               {draft.side==="buy"
                 ? <button className="btn" onClick={commitBuy}>{saving?"Saving…":"OK — open batch "+nextBatchNo(deals,draft.code)}</button>
@@ -993,7 +1078,7 @@ function App(){
           const marg=done>0?+draft.rate-cost/done:0;
           return (
             <div className="card">
-              <div className="crumb"><span className="pill" style={{color:"var(--sell)"}}>sell</span>
+              <div className="crumb"><span className="pill sell">sell</span>
                 <span className="eyebrow">{n2(need)} t {draft.product} to {shortName(draft.party)}</span></div>
               <h2>Which batch does it come out of?</h2>
               <p className="hint" style={{margin:"0 0 12px"}}>
@@ -1122,7 +1207,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
       <div className="kv"><span>In this book</span><b>{isBookAdmin?"admin — can edit and delete":"can enter deals"}</b></div>
 
       {book && isBookAdmin && (<>
-        <div className="eyebrow" style={{margin:"16px 0 6px"}}>{book.name} — people</div>
+        <div className="sech">{book.name} — people</div>
         {[...(book.admins||[]).map(e=>[e,"admin — edit and delete"]),
           ...(book.members||[]).map(e=>[e,"enter + see profit"]),
           ...(book.inputers||[]).map(e=>[e,"enter only, no profit"])].map(([e,r])=>(
@@ -1142,7 +1227,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
           can take reports. <b>Admin</b> can also change and delete deals, and manage this list.
         </p>
 
-        <div className="eyebrow" style={{margin:"18px 0 6px"}}>Book name and broker</div>
+        <div className="sech">Book name and broker</div>
         <div className="row">
           <F label="Book name" value={reName} onChange={setReName} />
         </div>
@@ -1167,7 +1252,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
           await save({brokers:[...(book.brokers||[]),bk]}); setNewBroker("");
         }}>Add broker</button>
 
-        <div className="eyebrow" style={{margin:"18px 0 6px"}}>Product short forms</div>
+        <div className="sech">Product short forms</div>
         <p className="hint" style={{margin:"0 0 8px"}}>
           Methanol, PG, NBA, BA, Cyclo, Xylene, MEK, MIBK and the rest are built in. Add anything you trade that
           is missing, with every long name you might paste, so it always saves under the short form.</p>
@@ -1192,7 +1277,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
       </>)}
 
       {isSuper && (<>
-        <div className="eyebrow" style={{margin:"18px 0 6px"}}>New book for another group</div>
+        <div className="sech">New book for another group</div>
         <F label="Book name" value={bookName} ph="BKM - AP Deals" onChange={setBookName} />
         <div style={{marginTop:8}}>
           <F label="Broker this book belongs to" value={nbBroker} ph="Bharat K Mehta" onChange={setNbBroker} />
@@ -1229,7 +1314,10 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
 function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList}){
   const [open,setOpen]=useState({});
   const toggle=(id)=>setOpen(o=>({...o,[id]:!o[id]}));
-  const pnl=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
+  const commOf=(d,qty)=> (+d.comm||0)*(qty!==undefined?qty:(+d.qty||0))*1000;
+  const commBatch=(b)=> commOf(b)+salesOf(deals,b.id).reduce((t,x)=>t+commOf(x,x.part),0);
+  const margin=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
+  const pnl=(b)=>margin(b)+commBatch(b);
   const wrongBroker=(d)=>{
     const list=(brokerList||[]); if(!list.length) return false;
     const t=normCo(d.broker||""); if(!t) return false;
@@ -1262,7 +1350,11 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
               <td>{b.code}</td><td className="mono">{dmy(b.date)}</td>
               <td title={b.party}>{shortName(b.party)}</td>
               <td>{canonProduct(b.product)}</td><td>{canonPort(b.port)||b.port||"—"}</td>
-              <td className="num">{n2(b.qty)}</td>{canSeePnl && <td className="num">{n2(b.rate)}</td>}
+              <td className="num">{n2(b.qty)}</td>
+              {canSeePnl && <td className="num">{n2(b.rate)}
+                {!!(+b.comm) && <div className={"eyebrow "+(+b.comm>=0?"good":"bad")}
+                  title={(+b.comm>=0?"commission receivable":"commission payable")}>
+                  comm {+b.comm>=0?"+":"−"}{n2(Math.abs(+b.comm))}</div>}</td>}
               <td style={{fontWeight:400}}>{b.storage||"—"}</td>
               <td style={{fontWeight:400}} title={b.comments}>{(b.comments||"—").slice(0,20)}</td>
               <td colSpan={4} style={{fontWeight:400,color:"var(--mute)"}}>
@@ -1275,7 +1367,9 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
                 ? <td className="bal" style={{color:"#8A6D0B"}}>{n2(b.balance)} t</td>
                 : canSeePnl
                   ? <td className="bal"><span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span>
-                      <div className="eyebrow">{b.sold>0? "₹"+n2(pnl(b)/(b.sold*1000))+"/kg" : "closed"}</div></td>
+                      <div className="eyebrow">{commBatch(b)>0
+                        ? "margin "+money(margin(b))+" + comm "+money(commBatch(b))
+                        : (b.sold>0? "₹"+n2(pnl(b)/(b.sold*1000))+"/kg" : "closed")}</div></td>
                   : <td className="bal" style={{color:"var(--mute)"}}>0 t</td>}
             </tr>
             {isOpen && sales.map(s=>{ const m=s.rate-b.rate; return (
@@ -1285,6 +1379,9 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
                 <td className="num">{n2(s.part)}</td>{canSeePnl && <td className="num">{n2(s.rate)}</td>}
                 <td className="bal">
                   {canSeePnl && <span className={m>=0?"good":"bad"}>{m>=0?"+":"−"}{n2(Math.abs(m))}</span>}
+                  {canSeePnl && !!(+s.comm) && <span className={+s.comm>=0?"good":"bad"}
+                    title={(+s.comm>=0?"commission receivable ":"commission payable ")+"₹"+n2(Math.abs(+s.comm))+"/kg"}>
+                    {"  comm "}{+s.comm>=0?"+":"−"}{n2(Math.abs(+s.comm))}</span>}
                   {canEdit && <button className="iconbtn" style={{marginLeft:6}} onClick={()=>onSale(s,b.id)}>e</button>}</td>
               </tr>); })}
           </Fragment>); })}
@@ -1316,13 +1413,15 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose}
       </div>
       {batch && <div className="row" style={{marginTop:10}}>
         <F label={"Taken from "+batch.batchNo} value={part} onChange={setPart} /></div>}
-      <div style={{marginTop:10}}><F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
+      <div className="row" style={{marginTop:10}}>
+        <F label="Commission ₹/kg" value={d.comm||""} onChange={(v)=>setD({...d,comm:v})} />
+        <F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
       {batch && <div className="kv" style={{marginTop:10}}><span>Margin on this batch</span>
         <b className={+d.rate-batch.rate>=0?"good":"bad"}>{+d.rate-batch.rate>=0?"+":"−"}₹{n2(Math.abs(+d.rate-batch.rate))}/kg</b></div>}
       {canEdit && <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>{
           const allocations=(d.allocations||[]).map(a=>a.batchId===fromId?{...a,qty:+part||0}:a).filter(a=>a.qty>0.0001);
-          onSave({...d,qty:+d.qty||0,rate:+d.rate||0,product:canonProduct(d.product),allocations});
+          onSave({...d,qty:+d.qty||0,rate:+d.rate||0,comm:+d.comm||0,product:canonProduct(d.product),allocations});
         }}>Save</button>
         <button className="btn ghost" onClick={()=>setMoving(true)}>{fromId?"Wrong batch — move it":"Attach to a batch"}</button>
         <button className="btn ghost" onClick={onClose}>Close</button>
@@ -1362,10 +1461,12 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
       <F label="Date" type="date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
       <F label="Storage" value={d.storage} onChange={(v)=>setD({...d,storage:v})} />
     </div>
-    <div style={{marginTop:10}}><F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
+    <div className="row" style={{marginTop:10}}>
+      <F label="Commission ₹/kg" value={d.comm||""} onChange={(v)=>setD({...d,comm:v})} />
+      <F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
     {canEdit
       ? <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
-          <button className="btn" onClick={()=>onSave({...d,product:canonProduct(d.product),port:canonPort(d.port)||d.port})}>Save</button>
+          <button className="btn" onClick={()=>onSave({...d,comm:+d.comm||0,product:canonProduct(d.product),port:canonPort(d.port)||d.port})}>Save</button>
           <button className="btn ghost" onClick={onClose}>Close</button>
           <button className="btn danger" onClick={onDelete}>Delete batch</button></div>
       : <div style={{marginTop:14}}><button className="btn ghost" onClick={onClose}>Close</button></div>}
