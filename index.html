@@ -76,7 +76,10 @@ tr.mismatch td.sticky{box-shadow:inset 3px 0 0 var(--sell)}
 table{border-collapse:collapse;min-width:1040px;width:100%;font-size:12px}
 th{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#B7C6D2;
  background:var(--ink);padding:7px 8px;text-align:left;white-space:nowrap}
-td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;
+ white-space:normal;overflow-wrap:anywhere;max-width:150px;line-height:1.35}
+td.mono,td.num,td.bal{white-space:nowrap;max-width:none}
+td.sticky{white-space:nowrap;max-width:none}
 tr.batch td{background:#F2F5F8;font-weight:600;border-top:2px solid var(--ink)}
 tr.sale td{background:var(--paper);color:#31414F}
 tr.sale td.ind{padding-left:14px;color:var(--mute)}
@@ -156,7 +159,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
-const BUILD = "b6";   /* shown on the sign-in screen and in settings */
+const BUILD = "b10";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -259,14 +262,18 @@ function digitiseWords(text){
     if(isNum(w)) run.push(w); else { flush(); out.push(t); } });
   flush(); return out.join(" ").replace(/\s+/g," ").trim();
 }
-const num=(s)=>{const m=String(s).replace(/,/g,"").match(/-?\d+(?:\.\d+)?/); return m?+m[0]:0;};
+/* 62:1 and 62;1 are 62.1 — the key next to the full stop */
+const fixDecimal=(s)=>String(s??"").replace(/(\d)\s*[:;]\s*(\d)/g,"$1.$2");
+const oddDecimal=(s)=>/(\d)\s*[:;]\s*(\d)/.test(String(s??""));
+const num=(s)=>{const m=fixDecimal(s).replace(/,/g,"").match(/-?\d+(?:\.\d+)?/); return m?+m[0]:0;};
 const n2=(v)=>(Math.round((+v+Number.EPSILON)*100)/100).toLocaleString("en-IN");
 const money=(v)=>{const a=Math.abs(v),s=v<0?"−":"";
   if(a>=10000000) return s+"₹"+(a/10000000).toFixed(2)+" Cr";
   if(a>=100000) return s+"₹"+(a/100000).toFixed(2)+" L";
   return s+"₹"+Math.round(a).toLocaleString("en-IN");};
 const today=()=>new Date().toISOString().slice(0,10);
-const dmy=(iso)=>{const p=String(iso).split("-"); return p.length===3?p[2]+"/"+p[1]+"/"+p[0].slice(2):iso;};
+/* one date format across the whole app: dd/mm/yyyy */
+const dmy=(iso)=>{const p=String(iso).split("-"); return p.length===3? p[2]+"/"+p[1]+"/"+p[0] : iso;};
 const uid=()=>"d_"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 
 /* ================= parsing ================= */
@@ -281,12 +288,13 @@ function grabDate(block){
   return y+"-"+String(+m[2]).padStart(2,"0")+"-"+String(+m[1]).padStart(2,"0");
 }
 function grabQty(s){
-  const t=deDev(String(s||"")).replace(/,/g,"");
+  const t=fixDecimal(deDev(String(s||""))).replace(/,/g,"");
   const r=t.match(/(\d+(?:\.\d+)?)\s*(?:to|-|–|—|~)\s*(\d+(?:\.\d+)?)/i);
   if(r) return {min:+r[1],max:+r[2]};
   const one=t.match(/(\d+(?:\.\d+)?)/); return one?{min:+one[1],max:+one[1]}:{min:0,max:0};
 }
 const grabRate=(s)=>num(deDev(String(s||"")).replace(/gst/gi,""));
+const rateLooksOdd=(s)=>oddDecimal(String(s||"").replace(/gst/gi,""));
 function parseStructured(text, companies){
   const blocks=String(text).split(/(?=sales\s*&?\s*purchase\s*confirmation)/i).filter(b=>/seller\s*:/i.test(b)||/buyer\s*:/i.test(b));
   if(!blocks.length) return null;
@@ -296,7 +304,9 @@ function parseStructured(text, companies){
     const q=grabQty(field(b,"qty")||field(b,"quantity"));
     return { raw:b, seller, buyer, ourAsSeller:ours(seller), ourAsBuyer:ours(buyer), date:grabDate(b),
       product:field(b,"product")||field(b,"material"), qty:q.max, qtyMin:q.min, qtyMax:q.max,
-      rate:grabRate(field(b,"rate")||field(b,"price")), port:field(b,"port"), storage:field(b,"storage"),
+      rate:grabRate(field(b,"rate")||field(b,"price")),
+      rateOdd:rateLooksOdd(field(b,"rate")||field(b,"price")),
+      port:field(b,"port"), storage:field(b,"storage"),
       payment:field(b,"payment"), broker:field(b,"broker"),
       comments:field(b,"comments")||field(b,"remark")||field(b,"delivery") };
   });
@@ -345,7 +355,9 @@ function batches(deals){
 const salesOf=(deals,batchId)=> deals.filter(d=>d.side==="sell"&&(d.allocations||[]).some(a=>a.batchId===batchId))
   .map(d=>({...d, part:(d.allocations||[]).filter(a=>a.batchId===batchId).reduce((s,a)=>s+(+a.qty||0),0)}))
   .sort((a,b)=> a.date<b.date?-1:1);
-const allocTotal=(d)=>(d.allocations||[]).reduce((s,a)=>s+(+a.qty||0),0);
+const allocTotal=(d,live)=>(d.allocations||[])
+  .filter(a=>!live||live.has(a.batchId))
+  .reduce((s,a)=>s+(+a.qty||0),0);
 function nextBatchNo(deals,code){
   const nums=batches(deals).filter(d=>d.code===code).map(d=>+String(d.batchNo||"").split("-")[1]||0);
   return code+"-"+String(Math.max(0,...nums)+1).padStart(2,"0");
@@ -357,6 +369,38 @@ function findDuplicate(deals,d){
 }
 
 /* ================= tiny bits ================= */
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const longDate=(iso)=>{
+  const p=String(iso||"").split("-");
+  if(p.length!==3||!p[0]||!p[1]||!p[2]) return "";
+  return (+p[2])+" "+(MON[+p[1]-1]||"?")+" "+p[0];
+};
+/* You type the date the way you write it — dd/mm/yyyy. No browser date picker,
+   because Chrome draws those month-first and that is what caused wrong dates. */
+const isoFromDmy=(t)=>{
+  const m=String(t||"").replace(/[.\-\s]+/g,"/").match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if(!m) return "";
+  const d=+m[1], mo=+m[2]; let y=+m[3];
+  if(y<100) y+=2000;
+  if(d<1||d>31||mo<1||mo>12||y<2000||y>2100) return "";
+  return y+"-"+String(mo).padStart(2,"0")+"-"+String(d).padStart(2,"0");
+};
+const DateF=({label,value,onChange})=>{
+  const [txt,setTxt]=useState(value?dmy(value):"");
+  useEffect(()=>{ setTxt(value?dmy(value):""); },[value]);
+  const iso=isoFromDmy(txt);
+  return (
+    <label><span>{label} — dd/mm/yyyy</span>
+      <input value={txt} placeholder="11/06/2026" inputMode="numeric"
+        style={txt&&!iso?{borderColor:"var(--sell)",background:"#FBEDE9",borderWidth:2}:{}}
+        onChange={(e)=>{ setTxt(e.target.value); const v=isoFromDmy(e.target.value); if(v) onChange(v); }} />
+      <div style={{marginTop:5,fontFamily:"'IBM Plex Mono',monospace",fontSize:13,fontWeight:600,
+        color:iso?"var(--buy)":"var(--sell)"}}>
+        {iso ? longDate(iso) : (txt ? "not a date yet" : "no date")}
+      </div>
+    </label>);
+};
+
 const F=({label,value,onChange,missing,ph,type})=>(
   <label className={missing?"miss":""}>
     <span>{label}{missing?" · needed":""}</span>
@@ -562,7 +606,7 @@ function App(){
   const normalise=(r)=>({ side, code:r.code||code, date:r.date||today(), party:r.party||"",
     product:canonProduct(r.product||""), qty:r.qty||"", qtyMin:r.qtyMin||0, qtyMax:r.qtyMax||0, rate:r.rate||"",
     port:canonPort(r.port||"")||port, storage:r.storage||"", payment:r.payment||"",
-    broker:r.broker||"", comm:r.comm||"", comments:r.comments||"" });
+    broker:r.broker||"", comm:r.comm||"", rateOdd:!!r.rateOdd, comments:r.comments||"" });
   const missing=(d)=>["party","product","port","qty","rate"]
     .filter(k=>!String(d?.[k]??"").trim()||((k==="qty"||k==="rate")&&!+d[k]));
 
@@ -577,7 +621,7 @@ function App(){
         const l=parseLoose(r.raw)||{};
         return { date:r.date||l.date,
           product:r.product||l.product, qty:r.qty||l.qty, qtyMin:r.qtyMin||l.qtyMin, qtyMax:r.qtyMax||l.qtyMax,
-          rate:r.rate||l.rate, port:r.port||l.port, storage:r.storage||l.storage,
+          rate:r.rate||l.rate, rateOdd:r.rateOdd, port:r.port||l.port, storage:r.storage||l.storage,
           payment:r.payment||l.payment, broker:r.broker||l.broker, comments:r.comments,
           party: side==="buy"? r.seller : r.buyer,
           code: (side==="buy"? r.ourAsBuyer : r.ourAsSeller) || code };
@@ -652,6 +696,8 @@ function App(){
     const wrongBk=brokerMismatch(d);
     if(wrongBk) out.push({t:"Wrong book",m:"This confirmation names "+wrongBk+" as broker, but "+book.name+" is "
       +(book.brokers||[]).join(" / ")+". It probably belongs in another book."});
+    if(d.rateOdd) out.push({t:"Check the rate",m:"The rate was written with a colon or semicolon, so it has been "
+      +"read as "+n2(d.rate)+". Correct it below if that is not right."});
     const dupe=findDuplicate(deals,d);
     if(dupe) out.push({t:"Possible duplicate",m:(dupe.batchNo?dupe.batchNo+" · ":"")+shortName(dupe.party)+" — "
       +dmy(dupe.date)+", "+n2(dupe.qty)+" t "+dupe.product+" @ ₹"+n2(dupe.rate)+"/kg, entered by "+(dupe.enteredBy||"—")+"."});
@@ -694,7 +740,8 @@ function App(){
   };
   const open=bts.filter(b=>inBook(b)&&b.balance>0.001&&matches(b));
   const closed=bts.filter(b=>inBook(b)&&b.balance<=0.001&&inPeriod(b)&&inProduct(b)&&matches(b));
-  const loose=deals.filter(d=>d.side==="sell"&&allocTotal(d)+0.001<(+d.qty||0)).filter(inBook);
+  const liveIds=new Set(bts.map(b=>b.id));
+  const loose=deals.filter(d=>d.side==="sell"&&allocTotal(d,liveIds)+0.001<(+d.qty||0)).filter(inBook);
   const inTank=open.reduce((s,b)=>s+b.balance,0);
   /* every deal carrying a commission, buy or sell, newest first */
   const commRows=deals.filter(d=>Math.abs(+d.comm||0)>0).filter(inBook)
@@ -920,8 +967,8 @@ function App(){
                 <label><span>Month</span><input type="month" value={period.month}
                   onChange={(e)=>setPeriod({...period,month:e.target.value})} /></label></div>}
               {period.mode==="range" && <div className="row" style={{marginTop:10}}>
-                <label><span>From</span><input type="date" value={period.from} onChange={(e)=>setPeriod({...period,from:e.target.value})} /></label>
-                <label><span>To</span><input type="date" value={period.to} onChange={(e)=>setPeriod({...period,to:e.target.value})} /></label>
+                <DateF label="From" value={period.from} onChange={(v)=>setPeriod({...period,from:v})} />
+                <DateF label="To" value={period.to} onChange={(v)=>setPeriod({...period,to:v})} />
               </div>}
               {tab==="closed" && <div style={{marginTop:12}}>
                 <div className="kv"><span>Batches closed{prod==="all"?"":" · "+prod}</span><b>{closed.length}</b></div>
@@ -993,7 +1040,7 @@ function App(){
               <h2 style={{color:"var(--sell)"}}>Sales not tied to a batch</h2>
               {loose.map(s=>(<div className="kv" key={s.id}>
                 <span>{dmy(s.date)} · {shortName(s.party)} · {s.product}</span>
-                <b>{n2((+s.qty||0)-allocTotal(s))} t open
+                <b>{n2((+s.qty||0)-allocTotal(s,liveIds))} t open
                   {canEdit && <button className="btn ghost small" style={{marginLeft:8}}
                     onClick={()=>setSheet({sale:s,fromId:null})}>attach</button>}</b></div>))}
             </div>)}
@@ -1077,7 +1124,7 @@ function App(){
               <button className="btn ghost small" style={{marginLeft:6}} onClick={()=>setDraft({...draft,qty:draft.qtyMin})}>use min</button>
               <button className="btn ghost small" style={{marginLeft:4}} onClick={()=>setDraft({...draft,qty:draft.qtyMax})}>use max</button></div>}
             <div className="row" style={{marginTop:10}}>
-              <F label="Date" type="date" value={draft.date} onChange={(v)=>setDraft({...draft,date:v})} />
+              <DateF label="Date" value={draft.date} onChange={(v)=>setDraft({...draft,date:v})} />
               <F label="Storage" value={draft.storage} ph="10 days" onChange={(v)=>setDraft({...draft,storage:v})} />
             </div>
             <div className="row" style={{marginTop:10}}>
@@ -1171,7 +1218,7 @@ function App(){
             onSave={async(u)=>{ try{ const {part,...clean}=u; await patchDeal(clean); setSheet(null); flash("Sale updated."); }
               catch(e){ setErr(e.message); } }}
             onMove={(toId)=>moveSale(s,sheet.fromId,toId)}
-            onAttach={async(b)=>{ const openQty=(+s.qty||0)-allocTotal(s);
+            onAttach={async(b)=>{ const openQty=(+s.qty||0)-allocTotal(s,liveIds);
               const take=Math.min(openQty,Math.max(b.balance,0))||openQty;
               try{ await patchDeal({id:s.id,allocations:[...(s.allocations||[]),{batchId:b.id,qty:+take.toFixed(3)}]});
                 setSheet(null); flash("Attached "+n2(take)+" t to "+b.batchNo+"."); }catch(e){ setErr(e.message); } }}
@@ -1397,7 +1444,7 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
                   title={(+b.comm>=0?"commission receivable":"commission payable")}>
                   comm {+b.comm>=0?"+":"−"}{n2(Math.abs(+b.comm))}</div>}</td>}
               <td style={{fontWeight:400}}>{b.storage||"—"}</td>
-              <td style={{fontWeight:400}} title={b.comments}>{(b.comments||"—").slice(0,20)}</td>
+              <td style={{fontWeight:400}} title={b.comments}>{b.comments||"—"}</td>
               <td colSpan={4} style={{fontWeight:400,color:"var(--mute)"}}>
                 {sales.length? <>{sales.length+" sale"+(sales.length>1?"s":"")+" · "+n2(b.sold)+" t sold"}
                   {canSeePnl && <> · <span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span></>}
@@ -1448,7 +1495,7 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose}
         <F label="Product" value={d.product} onChange={(v)=>setD({...d,product:v})} />
       </div>
       <div className="row" style={{marginTop:10}}>
-        <F label="Date" type="date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
+        <DateF label="Date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
         <F label="Total qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
         <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:v})} />
       </div>
@@ -1462,7 +1509,7 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose}
       {canEdit && <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>{
           const allocations=(d.allocations||[]).map(a=>a.batchId===fromId?{...a,qty:+part||0}:a).filter(a=>a.qty>0.0001);
-          onSave({...d,qty:+d.qty||0,rate:+d.rate||0,comm:+d.comm||0,product:canonProduct(d.product),allocations});
+          onSave({...d,qty:num(d.qty),rate:num(d.rate),comm:num(d.comm),product:canonProduct(d.product),allocations});
         }}>Save</button>
         <button className="btn ghost" onClick={()=>setMoving(true)}>{fromId?"Wrong batch — move it":"Attach to a batch"}</button>
         <button className="btn ghost" onClick={onClose}>Close</button>
@@ -1494,12 +1541,12 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
       <F label="Product" value={d.product} onChange={(v)=>setD({...d,product:v})} />
     </div>
     <div className="row" style={{marginTop:10}}>
-      <F label="Qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:+v||0})} />
-      <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:+v||0})} />
+      <F label="Qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
+      <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:v})} />
       <F label="Port" value={d.port} onChange={(v)=>setD({...d,port:v})} />
     </div>
     <div className="row" style={{marginTop:10}}>
-      <F label="Date" type="date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
+      <DateF label="Date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
       <F label="Storage" value={d.storage} onChange={(v)=>setD({...d,storage:v})} />
     </div>
     <div className="row" style={{marginTop:10}}>
@@ -1507,7 +1554,9 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
       <F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
     {canEdit
       ? <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
-          <button className="btn" onClick={()=>onSave({...d,comm:+d.comm||0,product:canonProduct(d.product),port:canonPort(d.port)||d.port})}>Save</button>
+          <button className="btn" onClick={()=>onSave({...d,
+            qty:num(d.qty), rate:num(d.rate), comm:num(d.comm),
+            product:canonProduct(d.product),port:canonPort(d.port)||d.port})}>Save</button>
           <button className="btn ghost" onClick={onClose}>Close</button>
           <button className="btn danger" onClick={onDelete}>Delete batch</button></div>
       : <div style={{marginTop:14}}><button className="btn ghost" onClick={onClose}>Close</button></div>}
