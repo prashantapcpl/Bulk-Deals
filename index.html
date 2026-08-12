@@ -42,6 +42,10 @@ input,select,textarea{width:100%;padding:9px;border:1px solid var(--line);border
 textarea{min-height:104px;line-height:1.5;resize:vertical}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--buy);outline-offset:-1px}
 .miss input{background:#FBEDE9;border:2px solid var(--sell)}
+td.pending{background:#FFF6DA !important}      /* lifted not filled in — booked qty standing in */
+td.settled{background:#E7F5EC !important}      /* real lifted quantity entered */
+.lift-pending input{background:#FFF6DA;border-color:#E9B824}
+.lift-settled input{background:#E7F5EC;border-color:var(--pos)}
 .miss span{color:var(--sell)}
 .row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1 1 150px;min-width:0}
 .btn{padding:10px 15px;border:1px solid var(--ink);background:var(--ink);color:#fff;border-radius:2px;cursor:pointer;
@@ -73,7 +77,7 @@ tr.mismatch td{background:#FBEDE9 !important}
 tr.mismatch td.sticky{box-shadow:inset 3px 0 0 var(--sell)}
 .good{color:var(--pos)}.bad{color:var(--sell)}
 .scrollx{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--paper);border:1px solid var(--line)}
-table{border-collapse:collapse;min-width:1040px;width:100%;font-size:12px}
+table{border-collapse:collapse;min-width:1180px;width:100%;font-size:12px}
 th{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#B7C6D2;
  background:var(--ink);padding:7px 8px;text-align:left;white-space:nowrap}
 td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
@@ -129,13 +133,13 @@ window.SUPER_ADMIN = "prashantapcpl@gmail.com";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp }
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 const app = initializeApp(window.FIREBASE_CONFIG);
 window.FB = {
   auth: getAuth(app), db: getFirestore(app),
   GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut,
-  collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp
+  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp
 };
 window.dispatchEvent(new Event("fb-ready"));
 </script>
@@ -157,7 +161,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
-const BUILD = "b11";   /* shown on the sign-in screen and in settings */
+const BUILD = "b16";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -273,6 +277,15 @@ const today=()=>new Date().toISOString().slice(0,10);
 /* one date format across the whole app: dd/mm/yyyy */
 const dmy=(iso)=>{const p=String(iso).split("-"); return p.length===3? p[2]+"/"+p[1]+"/"+p[0] : iso;};
 const uid=()=>"d_"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+/* who saved it, under which login, and when — straight from the record */
+const stamp=(d)=>{
+  const t=d&&d.createdAt ? new Date(d.createdAt) : null;
+  const when = t && !isNaN(t) ? dmy(t.toISOString().slice(0,10))+" at "
+    + String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0") : "";
+  return "entered by "+((d&&d.enteredBy)||"—")
+    + ((d&&d.enteredByEmail) ? " ("+d.enteredByEmail+")" : "")
+    + (when ? " on "+when : "");
+};
 
 /* ================= parsing ================= */
 function field(block,label){
@@ -340,18 +353,29 @@ function parseLoose(text){
 }
 
 /* ================= derived ================= */
+/* Every deal is booked at a quantity, then the tanker decides the real one.
+   Until someone fills in the lifted figure, the booked quantity stands in for it. */
+const isLifted=(d)=>{ const v=d&&d.lifted; return String(v??"").trim()!=="" && !isNaN(+v) && +v>0; };
+const effQty=(d)=> isLifted(d) ? +d.lifted : (+(d&&d.qty)||0);
+const liftScale=(d)=>{ const q=+(d&&d.qty)||0; return q>0 ? effQty(d)/q : 1; };
+/* a sale split across batches shrinks or grows in the same proportion */
+const partOf=(sale,batchId)=>(sale.allocations||[])
+  .filter(a=>a.batchId===batchId).reduce((s,a)=>s+(+a.qty||0),0) * liftScale(sale);
+
 function batches(deals){
   const drawn={};
-  deals.forEach(d=> d.side==="sell" && (d.allocations||[]).forEach(a=>{ drawn[a.batchId]=(drawn[a.batchId]||0)+(+a.qty||0); }));
+  deals.forEach(d=> d.side==="sell" && (d.allocations||[]).forEach(a=>{
+    drawn[a.batchId]=(drawn[a.batchId]||0)+(+a.qty||0)*liftScale(d); }));
   const seq={};
   return deals.filter(d=>d.side==="buy")
     .sort((a,b)=> a.date<b.date?-1 : a.date>b.date?1 : (a.createdAt||"")<(b.createdAt||"")?-1:1)
     .map(d=>{ const c=d.code||"AO"; seq[c]=(seq[c]||0)+1;
       return {...d, code:c, batchNo: d.batchNo||c+"-"+String(seq[c]).padStart(2,"0"),
-        sold: drawn[d.id]||0, balance:+(((+d.qty||0)-(drawn[d.id]||0)).toFixed(3))}; });
+        sold: drawn[d.id]||0, balance:+((effQty(d)-(drawn[d.id]||0)).toFixed(3))}; });
 }
 const salesOf=(deals,batchId)=> deals.filter(d=>d.side==="sell"&&(d.allocations||[]).some(a=>a.batchId===batchId))
-  .map(d=>({...d, part:(d.allocations||[]).filter(a=>a.batchId===batchId).reduce((s,a)=>s+(+a.qty||0),0)}))
+  .map(d=>({...d, part:partOf(d,batchId),
+    booked:(d.allocations||[]).filter(a=>a.batchId===batchId).reduce((s,a)=>s+(+a.qty||0),0)}))
   .sort((a,b)=> a.date<b.date?-1:1);
 const allocTotal=(d,live)=>(d.allocations||[])
   .filter(a=>!live||live.has(a.batchId))
@@ -418,7 +442,7 @@ function App(){
   const [unlocked,setUnlocked]=useState(false);
   const [pinTry,setPinTry]=useState(""); const [pinTry2,setPinTry2]=useState(""); const [myName,setMyName]=useState("");
   const [books,setBooks]=useState([]); const [bookId,setBookId]=useState("");
-  const [deals,setDeals]=useState([]);
+  const [deals,setDeals]=useState([]); const [binned,setBinned]=useState([]);
   const [screen,setScreen]=useState("home"); const [tab,setTab]=useState("open");
   const [side,setSide]=useState("buy"); const [draft,setDraft]=useState(null); const [queue,setQueue]=useState([]);
   const [alloc,setAlloc]=useState({}); const [text,setText]=useState(""); const [port,setPort]=useState("");
@@ -457,6 +481,14 @@ function App(){
     },(e)=>setErr("Books: "+e.message));
   },[user]);
 
+  /* --- the deleted log, live --- */
+  useEffect(()=>{
+    if(!user||!bookId){ setBinned([]); return; }
+    return FB.onSnapshot(FB.collection(db,"books",bookId,"deleted"),(s)=>{
+      setBinned(s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.deletedAt<b.deletedAt?1:-1)));
+    },()=>{});
+  },[user,bookId]);
+
   /* --- deals of the open book, live --- */
   useEffect(()=>{
     if(!user||!bookId) { setDeals([]); return; }
@@ -481,7 +513,17 @@ function App(){
   /* --- writes --- */
   const putDeal=async(d)=>{ await FB.setDoc(FB.doc(db,"books",bookId,"deals",d.id),d); };
   const patchDeal=async(d)=>{ const {id,...rest}=d; await FB.updateDoc(FB.doc(db,"books",bookId,"deals",id),rest); };
-  const dropDeal=async(id)=>{ await FB.deleteDoc(FB.doc(db,"books",bookId,"deals",id)); };
+  const dropDeal=async(id)=>{
+    const gone=deals.find(x=>x.id===id);
+    if(gone){
+      try{
+        await FB.setDoc(FB.doc(db,"books",bookId,"deleted",id),{
+          ...gone, deletedBy:who, deletedByEmail:myEmail, deletedAt:new Date().toISOString()
+        });
+      }catch(e){ /* the log must never block the delete itself */ }
+    }
+    await FB.deleteDoc(FB.doc(db,"books",bookId,"deals",id));
+  };
 
   /* ---------------- gates ---------------- */
   if(user===undefined) return <div className="db"><div className="gate"><p className="hint">Opening…</p></div></div>;
@@ -736,10 +778,12 @@ function App(){
     if(period.mode==="range"){ if(period.from&&b.date<period.from) return false; if(period.to&&b.date>period.to) return false; return true; }
     return true;
   };
-  const open=bts.filter(b=>inBook(b)&&b.balance>0.001&&matches(b));
-  const closed=bts.filter(b=>inBook(b)&&b.balance<=0.001&&inPeriod(b)&&inProduct(b)&&matches(b));
+  /* oversold batches must stay visible, not vanish into "closed" */
+  const open=bts.filter(b=>inBook(b)&&(b.balance>0.001||b.balance<-0.001)&&matches(b));
+  const closed=bts.filter(b=>inBook(b)&&Math.abs(b.balance)<=0.001&&inPeriod(b)&&inProduct(b)&&matches(b));
   const liveIds=new Set(bts.map(b=>b.id));
-  const loose=deals.filter(d=>d.side==="sell"&&allocTotal(d,liveIds)+0.001<(+d.qty||0)).filter(inBook);
+  const loose=deals.filter(d=>d.side==="sell"
+    && allocTotal(d,liveIds)*liftScale(d)+0.001 < effQty(d)).filter(inBook);
   const inTank=open.reduce((s,b)=>s+b.balance,0);
   /* every deal carrying a commission, buy or sell, newest first */
   const commRows=deals.filter(d=>Math.abs(+d.comm||0)>0).filter(inBook)
@@ -757,7 +801,7 @@ function App(){
        +5  we RECEIVE 5/kg  -> adds to profit
        -2  we PAY 2/kg      -> reduces profit
      Works the same on a purchase or a sale.  */
-  const commOf=(d,qty)=> (+d.comm||0) * (qty!==undefined?qty:(+d.qty||0)) * 1000;
+  const commOf=(d,qty)=> (+d.comm||0) * (qty!==undefined?qty:effQty(d)) * 1000;
   const commBatch=(b)=> commOf(b) + salesOf(deals,b.id).reduce((t,x)=>t+commOf(x,x.part),0);
   const margin=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
   const pnl=(b)=>margin(b)+commBatch(b);
@@ -1031,13 +1075,19 @@ function App(){
               ? "Nothing matched. Try shorter pieces — “sah 57” works better than the full spelling."
               : tab==="open"?"No stock in hand. Enter a buy deal to open a batch."
                 : prod==="all"?"Nothing closed in this period.":"No "+prod+" closed in this period."}
-            onBatch={(b)=>setSheet({batch:b})} onSale={(s,fromId)=>setSheet({sale:s,fromId})} />}
+            onBatch={(b)=>setSheet({batch:b})} onSale={(s,fromId)=>setSheet({sale:s,fromId})}
+            onQuick={async(d)=>{
+              try{ await patchDeal({id:d.id, lifted:+d.qty||0});
+                flash("Settled as booked — "+n2(+d.qty||0)+" t."); }
+              catch(e){ setErr(e.message); }
+            }} />}
 
           {tab==="open" && loose.length>0 && (
             <div className="card" style={{borderColor:"var(--sell)"}}>
               <h2 style={{color:"var(--sell)"}}>Sales not tied to a batch</h2>
               {loose.map(s=>(<div className="kv" key={s.id}>
-                <span>{dmy(s.date)} · {shortName(s.party)} · {s.product}</span>
+                <span>{dmy(s.date)} · {shortName(s.party)} · {s.product}
+                  <div className="eyebrow" style={{marginTop:2}}>{stamp(s)}</div></span>
                 <b>{n2((+s.qty||0)-allocTotal(s,liveIds))} t open
                   {canEdit && <button className="btn ghost small" style={{marginLeft:8}}
                     onClick={()=>setSheet({sale:s,fromId:null})}>attach</button>}</b></div>))}
@@ -1212,7 +1262,19 @@ function App(){
       {/* ---------- sheets ---------- */}
       {sheet && (<div className="sheet" onClick={(e)=>e.target.classList.contains("sheet")&&setSheet(null)}><div className="in">
         {sheet.sale && (()=>{ const s=deals.find(x=>x.id===sheet.sale.id)||sheet.sale; return (
-          <SaleEdit s={s} fromId={sheet.fromId} bts={bts} canEdit={canEdit}
+          <SaleEdit s={s} fromId={sheet.fromId} bts={bts} canEdit={canEdit} deals={deals}
+            onSettle={async(sale,batch,liftedQty,alsoBatch)=>{
+              try{
+                const allocations=(sale.allocations||[]).map(a=>
+                  a.batchId===batch.id ? {...a, qty:liftedQty} : a);
+                await patchDeal({id:sale.id, qty:liftedQty, allocations});
+                if(alsoBatch) await patchDeal({id:batch.id, qty:liftedQty});
+                setSheet(null);
+                flash(alsoBatch
+                  ? "Settled at "+n2(liftedQty)+" t — purchase, sale and profit updated."
+                  : "Sale settled at "+n2(liftedQty)+" t — batch balance adjusted.");
+              }catch(e){ setErr(e.message); }
+            }}
             onSave={async(u)=>{ try{ const {part,...clean}=u; await patchDeal(clean); setSheet(null); flash("Sale updated."); }
               catch(e){ setErr(e.message); } }}
             onMove={(toId)=>moveSale(s,sheet.fromId,toId)}
@@ -1227,15 +1289,37 @@ function App(){
           onDelete={()=>setConfirmKill(sheet.batch)} onClose={()=>setSheet(null)} />}
       </div></div>)}
 
-      {confirmKill && (<div className="sheet" onClick={(e)=>e.target.classList.contains("sheet")&&setConfirmKill(null)}><div className="in">
-        <h2>Delete this {confirmKill.side==="buy"?"batch":"sale"}?</h2>
-        <p className="hint" style={{margin:"6px 0 14px"}}>{dmy(confirmKill.date)} · {shortName(confirmKill.party)} ·
-          {" "}{n2(confirmKill.qty)} t {confirmKill.product} @ ₹{n2(confirmKill.rate)}</p>
-        <div style={{display:"flex",gap:8}}>
-          <button className="btn danger" onClick={async()=>{ try{ await dropDeal(confirmKill.id); setConfirmKill(null); setSheet(null); flash("Deleted."); }
-            catch(e){ setErr(e.message); } }}>Delete</button>
-          <button className="btn ghost" onClick={()=>setConfirmKill(null)}>Keep it</button>
-        </div></div></div>)}
+      {confirmKill && (()=>{
+        const tied = confirmKill.side==="buy" ? salesOf(deals,confirmKill.id) : [];
+        return (<div className="sheet" onClick={(e)=>e.target.classList.contains("sheet")&&setConfirmKill(null)}><div className="in">
+          <h2>Delete this {confirmKill.side==="buy"?"batch":"sale"}?</h2>
+          <p className="hint" style={{margin:"6px 0 12px"}}>{dmy(confirmKill.date)} · {shortName(confirmKill.party)} ·
+            {" "}{n2(confirmKill.qty)} t {confirmKill.product} @ ₹{n2(confirmKill.rate)}</p>
+
+          {tied.length>0 && (
+            <div className="flag" style={{marginBottom:12}}><span className="flagicon">⚑</span>
+              <div><b>{tied.length} sale{tied.length>1?"s are":" is"} booked against this batch.</b> Deleting the
+                batch alone leaves {tied.length>1?"them":"it"} showing under “sales not tied to a batch”.</div></div>)}
+          {tied.map(x=>(
+            <div className="kv" key={x.id}><span>{dmy(x.date)} · {shortName(x.party)}</span>
+              <b>{n2(x.part)} t @ ₹{n2(x.rate)}</b></div>))}
+
+          <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+            <button className="btn danger" onClick={async()=>{
+              try{ await dropDeal(confirmKill.id); setConfirmKill(null); setSheet(null);
+                flash(tied.length? "Batch deleted — "+tied.length+" sale"+(tied.length>1?"s":"")+" now unattached." : "Deleted."); }
+              catch(e){ setErr(e.message); } }}>
+              {tied.length? "Delete batch only" : "Delete"}</button>
+            {tied.length>0 && <button className="btn danger" onClick={async()=>{
+              try{
+                for(const x of tied) await dropDeal(x.id);
+                await dropDeal(confirmKill.id);
+                setConfirmKill(null); setSheet(null);
+                flash("Batch and "+tied.length+" sale"+(tied.length>1?"s":"")+" deleted.");
+              }catch(e){ setErr(e.message); } }}>
+              Delete batch and its {tied.length} sale{tied.length>1?"s":""}</button>}
+            <button className="btn ghost" onClick={()=>setConfirmKill(null)}>Keep it</button>
+          </div></div></div>); })()}
 
       {dump && (<div className="sheet" onClick={(e)=>e.target.classList.contains("sheet")&&setDump(null)}><div className="in">
         <h2>Backup</h2>
@@ -1246,7 +1330,13 @@ function App(){
           <button className="btn ghost" onClick={()=>setDump(null)}>Close</button>
         </div></div></div>)}
 
-      {people && <People user={user} isSuper={isSuper} book={book} books={books} db={db} FB={FB}
+      {people && <People user={user} isSuper={isSuper} book={book} books={books} db={db} FB={FB} binned={binned}
+        onWipe={async()=>{
+          const snap=await FB.getDocs(FB.collection(db,"books",bookId,"deals"));
+          let n=0;
+          for(const docu of snap.docs){ await FB.deleteDoc(FB.doc(db,"books",bookId,"deals",docu.id)); n++; }
+          return n;
+        }}
         note={note} setNote={setNote} onClose={()=>{setNote("");setPeople(false);}}
         onLock={leaveBook}
         onSignOut={()=>doSignOut()} />}
@@ -1254,11 +1344,12 @@ function App(){
 }
 
 /* ================= people & books ================= */
-function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSignOut}){
+function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSignOut,onWipe,binned}){
   const [email,setEmail]=useState(""); const [bookName,setBookName]=useState("");
   const [reName,setReName]=useState(book?book.name:""); const [newBroker,setNewBroker]=useState("");
   const [nbBroker,setNbBroker]=useState("");
   const [pCode,setPCode]=useState(""); const [pAlias,setPAlias]=useState("");
+  const [wipeTxt,setWipeTxt]=useState(""); const [wiping,setWiping]=useState(false);
   const [c1,setC1]=useState("AO"); const [n1,setN1]=useState("Agarwal Overseas");
   const [c2,setC2]=useState("AP"); const [n2n,setN2]=useState("A P Chemicals P Ltd");
   const myEmail=(user.email||"").trim().toLowerCase();
@@ -1388,6 +1479,36 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
         }}>Create book</button>
       </>)}
 
+      {isBookAdmin && (<>
+        <div className="sech">Deleted deals ({(binned||[]).length})</div>
+        {(binned||[]).length===0 && <p className="hint">Nothing has been deleted from this book.</p>}
+        {(binned||[]).slice(0,25).map(x=>(
+          <div key={x.id} style={{padding:"7px 0",borderBottom:"1px dotted var(--line)",fontSize:13}}>
+            <b>{x.side==="buy"?(x.batchNo||"batch"):"sale"}</b> · {dmy(x.date)} · {shortName(x.party)} ·
+            {" "}{n2(x.qty)} t {canonProduct(x.product)} @ ₹{n2(x.rate)}
+            <div className="eyebrow" style={{marginTop:2}}>
+              deleted by {x.deletedBy||"—"}{x.deletedByEmail?" ("+x.deletedByEmail+")":""}
+              {x.deletedAt?" on "+dmy(String(x.deletedAt).slice(0,10)):""}
+            </div>
+          </div>))}
+        {(binned||[]).length>25 && <p className="hint" style={{marginTop:6}}>
+          Showing the 25 most recent of {binned.length}.</p>}
+
+        <div className="sech" style={{borderLeftColor:"var(--sell)",color:"var(--sell)"}}>Start fresh</div>
+        <p className="hint" style={{margin:"0 0 8px"}}>
+          Deletes <b>every deal</b> in {book.name} — batches, sales, commission, the lot. People, brokers and
+          product short forms stay. This cannot be undone, so take a Backup first.</p>
+        <F label={'Type "'+book.name+'" to enable'} value={wipeTxt} ph={book.name} onChange={setWipeTxt} />
+        <button className="btn danger" style={{marginTop:8}}
+          disabled={wipeTxt.trim()!==book.name || wiping}
+          onClick={async()=>{
+            setWiping(true); setNote("Deleting…");
+            try{ const n=await onWipe(); setNote(n+" deals deleted. The book is empty."); setWipeTxt(""); }
+            catch(e){ setNote("Could not finish: "+e.message); }
+            setWiping(false);
+          }}>{wiping? "Deleting…" : "Delete every deal in this book"}</button>
+      </>)}
+
       <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}}>
         <button className="btn ghost" onClick={onLock}>Lock (ask PIN again)</button>
         <button className="btn ghost" onClick={onSignOut}>Sign out</button>
@@ -1397,10 +1518,10 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
 }
 
 /* ================= ledger ================= */
-function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList}){
+function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList,onQuick}){
   const [open,setOpen]=useState({});
   const toggle=(id)=>setOpen(o=>({...o,[id]:!o[id]}));
-  const commOf=(d,qty)=> (+d.comm||0)*(qty!==undefined?qty:(+d.qty||0))*1000;
+  const commOf=(d,qty)=> (+d.comm||0)*(qty!==undefined?qty:effQty(d))*1000;
   const commBatch=(b)=> commOf(b)+salesOf(deals,b.id).reduce((t,x)=>t+commOf(x,x.part),0);
   const margin=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
   const pnl=(b)=>margin(b)+commBatch(b);
@@ -1418,14 +1539,16 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
     <div className="scrollx"><table>
       <thead><tr>
         <th className="sticky">Batch</th><th>Co</th><th>Date</th><th>Purchase party</th><th>Product</th><th>Port</th>
-        <th style={{textAlign:"right"}}>Qty</th>{canSeePnl && <th style={{textAlign:"right"}}>Rate</th>}
+        <th style={{textAlign:"right"}}>Deal qty</th><th style={{textAlign:"right"}}>Lifted qty</th>
+        {canSeePnl && <th style={{textAlign:"right"}}>Rate</th>}
         <th>Storage</th><th>Comments</th>
-        <th>Sale date</th><th>Sale party</th><th style={{textAlign:"right"}}>Qty</th>
+        <th>Sale date</th><th>Sale party</th>
+        <th style={{textAlign:"right"}}>Deal qty</th><th style={{textAlign:"right"}}>Lifted qty</th>
         {canSeePnl && <th style={{textAlign:"right"}}>Rate</th>}
         <th style={{textAlign:"right"}}>{canSeePnl?"Balance / P&L":"Balance"}</th>
       </tr></thead>
       <tbody>
-        {rows.length===0 && <tr><td colSpan={canSeePnl?15:13} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>{empty}</td></tr>}
+        {rows.length===0 && <tr><td colSpan={canSeePnl?17:15} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>{empty}</td></tr>}
         {rows.map(b=>{
           const sales=salesOf(deals,b.id); const isOpen=forceOpen||!!open[b.id];
           return (<Fragment key={b.id}>
@@ -1437,19 +1560,35 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
               <td className="wrap" title={b.party}>{shortName(b.party)}</td>
               <td>{canonProduct(b.product)}</td><td>{canonPort(b.port)||b.port||"—"}</td>
               <td className="num">{n2(b.qty)}</td>
+              {(()=>{
+                const done=sales.filter(x=>isLifted(x)).length;
+                const all=isLifted(b) && done===sales.length;
+                return (
+                  <td className={"num "+(all?"settled":"pending")}
+                    style={canEdit?{cursor:"pointer"}:{}}
+                    onClick={(e)=>{ if(canEdit&&!isLifted(b)){ e.stopPropagation(); onQuick(b); } }}
+                    title={all ? "purchase and all "+sales.length+" sale"+(sales.length===1?"":"s")+" settled"
+                      : (!isLifted(b) ? "purchase not settled — tap to confirm as booked"
+                        : done+" of "+sales.length+" sales settled")}>
+                    {n2(effQty(b))}
+                    {!all && <div className="eyebrow" style={{color:"#8A6D0B"}}>
+                      {!isLifted(b) ? "not settled" : done+"/"+sales.length+" sales"}</div>}
+                  </td>); })()}
               {canSeePnl && <td className="num">{n2(b.rate)}
                 {!!(+b.comm) && <div className={"eyebrow "+(+b.comm>=0?"good":"bad")}
                   title={(+b.comm>=0?"commission receivable":"commission payable")}>
                   comm {+b.comm>=0?"+":"−"}{n2(Math.abs(+b.comm))}</div>}</td>}
               <td className="wrap" style={{fontWeight:400}}>{b.storage||"—"}</td>
               <td className="wrap" style={{fontWeight:400}} title={b.comments}>{b.comments||"—"}</td>
-              <td colSpan={4} style={{fontWeight:400,color:"var(--mute)"}}>
+              <td colSpan={canSeePnl?5:4} style={{fontWeight:400,color:"var(--mute)"}}>
                 {sales.length? <>{sales.length+" sale"+(sales.length>1?"s":"")+" · "+n2(b.sold)+" t sold"}
                   {canSeePnl && <> · <span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span></>}
                   {isOpen?"":" — tap to open"}</> : "no sale yet"}
                 {canEdit && <button className="iconbtn" style={{marginLeft:8}} onClick={(e)=>{e.stopPropagation();onBatch(b);}}>e</button>}
               </td>
-              {b.balance>0.001
+              {b.balance<-0.001
+                ? <td className="bal bad" title="more sold than bought">⚑ {n2(-b.balance)} t over</td>
+                : b.balance>0.001
                 ? <td className="bal" style={{color:"#8A6D0B"}}>{n2(b.balance)} t</td>
                 : canSeePnl
                   ? <td className="bal"><span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span>
@@ -1460,9 +1599,15 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
             </tr>
             {isOpen && sales.map(s=>{ const m=s.rate-b.rate; return (
               <tr className="sale" key={s.id+b.id}>
-                <td className="sticky ind">↳</td><td /><td colSpan={8} />
+                <td className="sticky ind">↳</td><td /><td colSpan={canSeePnl?9:8} />
                 <td className="mono">{dmy(s.date)}</td><td className="wrap" title={s.party}>{shortName(s.party)}</td>
-                <td className="num">{n2(s.part)}</td>{canSeePnl && <td className="num">{n2(s.rate)}</td>}
+                <td className="num">{n2(s.booked)}</td>
+                <td className={"num "+(isLifted(s)?"settled":"pending")}
+                  style={canEdit?{cursor:"pointer"}:{}}
+                  onClick={()=>{ if(canEdit&&!isLifted(s)) onQuick(s); }}
+                  title={isLifted(s)?"actual lifted quantity":"not settled — tap to confirm as booked"}>
+                  {n2(s.part)}</td>
+                {canSeePnl && <td className="num">{n2(s.rate)}</td>}
                 <td className="bal">
                   {canSeePnl && <span className={m>=0?"good":"bad"}>{m>=0?"+":"−"}{n2(Math.abs(m))}</span>}
                   {canSeePnl && !!(+s.comm) && <span className={+s.comm>=0?"good":"bad"}
@@ -1476,17 +1621,23 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
   </>);
 }
 
-function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose}){
+function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose,deals,onSettle}){
   const here=(s.allocations||[]).find(a=>a.batchId===fromId);
   const [d,setD]=useState({...s}); const [part,setPart]=useState(here?String(here.qty):"");
   const [moving,setMoving]=useState(false);
+  const [lifted,setLifted]=useState("");
   const batch=bts.find(b=>b.id===fromId);
   const others=bts.filter(b=>b.id!==fromId&&b.code===s.code);
+  /* the purchase can only follow the sale when this sale is the whole batch —
+     otherwise other sales on the same batch would be thrown out */
+  const soleSale = batch && salesOf(deals||[],batch.id).length===1
+    && Math.abs((here?here.qty:0)-(+batch.qty||0))<0.001
+    && Math.abs((+s.qty||0)-(here?here.qty:0))<0.001;
   return (<>
     <h2>{canEdit?"Edit sale":"Sale"}</h2>
     <p className="hint" style={{marginBottom:12}}>
       {batch? "Booked against "+batch.batchNo+" · "+shortName(batch.party)+" @ ₹"+n2(batch.rate)+"/kg" : "Not tied to any batch"}
-      {" · entered by "+(s.enteredBy||"—")}</p>
+      <br/>{stamp(s)}</p>
     {!moving && (<>
       <div className="row">
         <F label="Sale party" value={d.party} onChange={(v)=>setD({...d,party:v,buyer:v})} />
@@ -1494,11 +1645,43 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose}
       </div>
       <div className="row" style={{marginTop:10}}>
         <DateF label="Date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
-        <F label="Total qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
+        <F label="Deal qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
+        <div className={isLifted(d)?"lift-settled":"lift-pending"} style={{flex:"1 1 150px"}}>
+          <F label="Lifted qty (ton)" value={d.lifted??""} ph={n2(d.qty)+" — not settled"}
+            onChange={(v)=>setD({...d,lifted:v})} />
+          <div style={{display:"flex",gap:6,marginTop:5}}>
+            <button className="btn ghost small" onClick={()=>setD({...d,lifted:num(d.qty)})}>same as booked</button>
+            {isLifted(d) && <button className="btn ghost small" onClick={()=>setD({...d,lifted:""})}>clear</button>}
+          </div>
+        </div>
         <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:v})} />
       </div>
       {batch && <div className="row" style={{marginTop:10}}>
         <F label={"Taken from "+batch.batchNo} value={part} onChange={setPart} /></div>}
+
+      {false && (<>
+        <div className="sech">Actual quantity lifted</div>
+        <p className="hint" style={{margin:"0 0 8px"}}>
+          {soleSale
+            ? <>This sale is the whole of {batch.batchNo}, so the purchase moves with it. Enter what actually
+               lifted and both sides plus the profit are recalculated.</>
+            : <>{batch.batchNo} has other sales on it, so only this sale changes. The batch balance adjusts by
+               the difference; correct the purchase separately if the whole lot lifted short.</>}
+        </p>
+        <div className="row">
+          <F label="Lifted (ton)" value={lifted} ph={n2(here?here.qty:s.qty)} onChange={setLifted} />
+        </div>
+        {!!num(lifted) && (
+          <div className="kv" style={{marginTop:8}}>
+            <span>{soleSale? "Purchase, sale and allocation all become" : "Sale and allocation become"}</span>
+            <b>{n2(num(lifted))} t{" "}
+              <span className={num(lifted)-(here?here.qty:+s.qty)>=0?"good":"bad"}>
+                ({num(lifted)-(here?here.qty:+s.qty)>=0?"+":"−"}{n2(Math.abs(num(lifted)-(here?here.qty:+s.qty)))} t)
+              </span></b>
+          </div>)}
+        <button className="btn" style={{marginTop:10}} disabled={!num(lifted)}
+          onClick={()=>onSettle(s, batch, num(lifted), soleSale)}>Settle at this quantity</button>
+      </>)}
       <div className="row" style={{marginTop:10}}>
         <F label="Commission ₹/kg" value={d.comm||""} onChange={(v)=>setD({...d,comm:v})} />
         <F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
@@ -1507,7 +1690,9 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose}
       {canEdit && <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>{
           const allocations=(d.allocations||[]).map(a=>a.batchId===fromId?{...a,qty:+part||0}:a).filter(a=>a.qty>0.0001);
-          onSave({...d,qty:num(d.qty),rate:num(d.rate),comm:num(d.comm),product:canonProduct(d.product),allocations});
+          onSave({...d,qty:num(d.qty),rate:num(d.rate),comm:num(d.comm),
+            lifted:String(d.lifted??"").trim()===""?"":num(d.lifted),
+            product:canonProduct(d.product),allocations});
         }}>Save</button>
         <button className="btn ghost" onClick={()=>setMoving(true)}>{fromId?"Wrong batch — move it":"Attach to a batch"}</button>
         <button className="btn ghost" onClick={onClose}>Close</button>
@@ -1533,13 +1718,22 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
   const [d,setD]=useState({...b});
   return (<>
     <h2>Batch {b.batchNo}</h2>
-    <p className="hint" style={{marginBottom:10}}>Sold {n2(b.sold)} t · balance {n2(b.balance)} t · entered by {b.enteredBy||"—"}</p>
+    <p className="hint" style={{marginBottom:10}}>Sold {n2(b.sold)} t · balance {n2(b.balance)} t
+      <br/>{stamp(b)}</p>
     <div className="row">
       <F label="Purchase party" value={d.party} onChange={(v)=>setD({...d,party:v,seller:v})} />
       <F label="Product" value={d.product} onChange={(v)=>setD({...d,product:v})} />
     </div>
     <div className="row" style={{marginTop:10}}>
-      <F label="Qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
+      <F label="Deal qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
+      <div className={isLifted(d)?"lift-settled":"lift-pending"} style={{flex:"1 1 150px"}}>
+        <F label="Lifted qty (ton)" value={d.lifted??""} ph={n2(d.qty)+" — not settled"}
+          onChange={(v)=>setD({...d,lifted:v})} />
+        <div style={{display:"flex",gap:6,marginTop:5}}>
+          <button className="btn ghost small" onClick={()=>setD({...d,lifted:num(d.qty)})}>same as booked</button>
+          {isLifted(d) && <button className="btn ghost small" onClick={()=>setD({...d,lifted:""})}>clear</button>}
+        </div>
+      </div>
       <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:v})} />
       <F label="Port" value={d.port} onChange={(v)=>setD({...d,port:v})} />
     </div>
@@ -1554,6 +1748,7 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
       ? <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
           <button className="btn" onClick={()=>onSave({...d,
             qty:num(d.qty), rate:num(d.rate), comm:num(d.comm),
+            lifted:String(d.lifted??"").trim()===""?"":num(d.lifted),
             product:canonProduct(d.product),port:canonPort(d.port)||d.port})}>Save</button>
           <button className="btn ghost" onClick={onClose}>Close</button>
           <button className="btn danger" onClick={onDelete}>Delete batch</button></div>
