@@ -82,6 +82,7 @@ th{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.1em;tex
  background:var(--ink);padding:7px 8px;text-align:left;white-space:nowrap}
 td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
 td.wrap{white-space:normal;overflow-wrap:anywhere;max-width:150px;line-height:1.35}
+td.wrap>span{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 tr.batch td{background:#F2F5F8;font-weight:600;border-top:2px solid var(--ink)}
 tr.sale td{background:var(--paper);color:#31414F}
 tr.sale td.ind{padding-left:14px;color:var(--mute)}
@@ -161,7 +162,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
-const BUILD = "b16";   /* shown on the sign-in screen and in settings */
+const BUILD = "b18";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -283,7 +284,6 @@ const stamp=(d)=>{
   const when = t && !isNaN(t) ? dmy(t.toISOString().slice(0,10))+" at "
     + String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0") : "";
   return "entered by "+((d&&d.enteredBy)||"—")
-    + ((d&&d.enteredByEmail) ? " ("+d.enteredByEmail+")" : "")
     + (when ? " on "+when : "");
 };
 
@@ -363,15 +363,26 @@ const partOf=(sale,batchId)=>(sale.allocations||[])
   .filter(a=>a.batchId===batchId).reduce((s,a)=>s+(+a.qty||0),0) * liftScale(sale);
 
 function batches(deals){
-  const drawn={};
+  const drawn={}, booked={}, kids={};
   deals.forEach(d=> d.side==="sell" && (d.allocations||[]).forEach(a=>{
-    drawn[a.batchId]=(drawn[a.batchId]||0)+(+a.qty||0)*liftScale(d); }));
+    drawn[a.batchId]=(drawn[a.batchId]||0)+(+a.qty||0)*liftScale(d);
+    booked[a.batchId]=(booked[a.batchId]||0)+(+a.qty||0);
+    (kids[a.batchId]=kids[a.batchId]||[]).push(d);
+  }));
   const seq={};
   return deals.filter(d=>d.side==="buy")
     .sort((a,b)=> a.date<b.date?-1 : a.date>b.date?1 : (a.createdAt||"")<(b.createdAt||"")?-1:1)
     .map(d=>{ const c=d.code||"AO"; seq[c]=(seq[c]||0)+1;
+      const mine=kids[d.id]||[];
+      /* a purchase is settled once all of it is sold and every one of those
+         sales has had its real lifted quantity confirmed */
+      const fullyAllocated = Math.abs((+d.qty||0)-(booked[d.id]||0))<0.001;
+      const allSettled = mine.length>0 && mine.every(isLifted);
+      const settled = fullyAllocated && allSettled;
+      const eff = settled ? (drawn[d.id]||0) : (+d.qty||0);
       return {...d, code:c, batchNo: d.batchNo||c+"-"+String(seq[c]).padStart(2,"0"),
-        sold: drawn[d.id]||0, balance:+((effQty(d)-(drawn[d.id]||0)).toFixed(3))}; });
+        settled, saleCount:mine.length, saleSettled:mine.filter(isLifted).length,
+        shownQty:eff, sold: drawn[d.id]||0, balance:+((eff-(drawn[d.id]||0)).toFixed(3))}; });
 }
 const salesOf=(deals,batchId)=> deals.filter(d=>d.side==="sell"&&(d.allocations||[]).some(a=>a.batchId===batchId))
   .map(d=>({...d, part:partOf(d,batchId),
@@ -967,6 +978,7 @@ function App(){
             <button data-on={tab==="open"?"1":"0"} onClick={()=>setTab("open")}>Open deals ({open.length})</button>
             <button data-on={tab==="closed"?"1":"0"} onClick={()=>setTab("closed")}>Closed deals ({closed.length})</button>
             {canSeePnl && <button data-on={tab==="comm"?"1":"0"} onClick={()=>setTab("comm")}>Commission ({commRows.length})</button>}
+            {canEdit && <button data-on={tab==="bin"?"1":"0"} onClick={()=>setTab("bin")}>Deleted ({binned.length})</button>}
           </div>
 
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10,alignItems:"center"}}>
@@ -1026,6 +1038,40 @@ function App(){
               </div>}
             </div>)}
 
+          {tab==="bin" && (
+            <div className="card">
+              <h2>Deleted deals</h2>
+              <p className="hint" style={{margin:"0 0 12px"}}>
+                Everything removed from {book.name}, newest first. This log is written once and cannot be edited or
+                cleared by anyone, including an admin — it is the record of what was taken out and by whom.</p>
+              <div className="scrollx">
+                <table style={{minWidth:900}}>
+                  <thead><tr>
+                    <th className="sticky">Deleted on</th><th>By</th><th>Type</th><th>Deal date</th>
+                    <th>Party</th><th>Product</th><th>Port</th>
+                    <th style={{textAlign:"right"}}>Qty</th><th style={{textAlign:"right"}}>Rate</th>
+                  </tr></thead>
+                  <tbody>
+                    {binned.length===0 && <tr><td colSpan={9} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>
+                      Nothing has been deleted from this book.</td></tr>}
+                    {binned.map(x=>(
+                      <tr className="sale" key={x.id}>
+                        <td className="sticky mono">{x.deletedAt? dmy(String(x.deletedAt).slice(0,10)) : "—"}
+                          <div className="eyebrow">{x.deletedAt? String(x.deletedAt).slice(11,16) : ""}</div></td>
+                        <td className="wrap"><span>{x.deletedBy||"—"}</span></td>
+                        <td>{x.side==="buy" ? (x.batchNo||"batch") : "sale"}</td>
+                        <td className="mono">{dmy(x.date)}</td>
+                        <td className="wrap" title={x.party}><span>{shortName(x.party)}</span></td>
+                        <td>{canonProduct(x.product)}</td>
+                        <td>{canonPort(x.port)||x.port||"—"}</td>
+                        <td className="num">{n2(x.qty)}</td>
+                        <td className="num">{n2(x.rate)}</td>
+                      </tr>))}
+                  </tbody>
+                </table>
+              </div>
+            </div>)}
+
           {tab==="comm" && (
             <div className="card">
               <h2>Commission</h2>
@@ -1069,18 +1115,14 @@ function App(){
                 <b className={commTotal>=0?"good":"bad"}>{money(commTotal)}</b></div>
             </div>)}
 
-          {tab!=="comm" && <Ledger rows={tab==="open"?open:closed} deals={deals} canEdit={canEdit} canSeePnl={canSeePnl}
+          {tab!=="comm" && tab!=="bin" && <Ledger rows={tab==="open"?open:closed} deals={deals} canEdit={canEdit} canSeePnl={canSeePnl}
             brokerList={brokerList} forceOpen={terms.length>0}
             empty={terms.length
               ? "Nothing matched. Try shorter pieces — “sah 57” works better than the full spelling."
               : tab==="open"?"No stock in hand. Enter a buy deal to open a batch."
                 : prod==="all"?"Nothing closed in this period.":"No "+prod+" closed in this period."}
             onBatch={(b)=>setSheet({batch:b})} onSale={(s,fromId)=>setSheet({sale:s,fromId})}
-            onQuick={async(d)=>{
-              try{ await patchDeal({id:d.id, lifted:+d.qty||0});
-                flash("Settled as booked — "+n2(+d.qty||0)+" t."); }
-              catch(e){ setErr(e.message); }
-            }} />}
+ />}
 
           {tab==="open" && loose.length>0 && (
             <div className="card" style={{borderColor:"var(--sell)"}}>
@@ -1480,27 +1522,20 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
       </>)}
 
       {isBookAdmin && (<>
-        <div className="sech">Deleted deals ({(binned||[]).length})</div>
-        {(binned||[]).length===0 && <p className="hint">Nothing has been deleted from this book.</p>}
-        {(binned||[]).slice(0,25).map(x=>(
-          <div key={x.id} style={{padding:"7px 0",borderBottom:"1px dotted var(--line)",fontSize:13}}>
-            <b>{x.side==="buy"?(x.batchNo||"batch"):"sale"}</b> · {dmy(x.date)} · {shortName(x.party)} ·
-            {" "}{n2(x.qty)} t {canonProduct(x.product)} @ ₹{n2(x.rate)}
-            <div className="eyebrow" style={{marginTop:2}}>
-              deleted by {x.deletedBy||"—"}{x.deletedByEmail?" ("+x.deletedByEmail+")":""}
-              {x.deletedAt?" on "+dmy(String(x.deletedAt).slice(0,10)):""}
-            </div>
-          </div>))}
-        {(binned||[]).length>25 && <p className="hint" style={{marginTop:6}}>
-          Showing the 25 most recent of {binned.length}.</p>}
-
         <div className="sech" style={{borderLeftColor:"var(--sell)",color:"var(--sell)"}}>Start fresh</div>
         <p className="hint" style={{margin:"0 0 8px"}}>
           Deletes <b>every deal</b> in {book.name} — batches, sales, commission, the lot. People, brokers and
           product short forms stay. This cannot be undone, so take a Backup first.</p>
         <F label={'Type "'+book.name+'" to enable'} value={wipeTxt} ph={book.name} onChange={setWipeTxt} />
+        {wipeTxt.trim() && (
+          <p className="hint" style={{marginTop:5,color:
+            wipeTxt.trim().toLowerCase()===book.name.trim().toLowerCase()?"var(--pos)":"var(--sell)"}}>
+            {wipeTxt.trim().toLowerCase()===book.name.trim().toLowerCase()
+              ? "Matches — the button below is now live."
+              : "Does not match the book name yet."}
+          </p>)}
         <button className="btn danger" style={{marginTop:8}}
-          disabled={wipeTxt.trim()!==book.name || wiping}
+          disabled={wipeTxt.trim().toLowerCase()!==book.name.trim().toLowerCase() || wiping}
           onClick={async()=>{
             setWiping(true); setNote("Deleting…");
             try{ const n=await onWipe(); setNote(n+" deals deleted. The book is empty."); setWipeTxt(""); }
@@ -1518,7 +1553,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
 }
 
 /* ================= ledger ================= */
-function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList,onQuick}){
+function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList}){
   const [open,setOpen]=useState({});
   const toggle=(id)=>setOpen(o=>({...o,[id]:!o[id]}));
   const commOf=(d,qty)=> (+d.comm||0)*(qty!==undefined?qty:effQty(d))*1000;
@@ -1539,7 +1574,7 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
     <div className="scrollx"><table>
       <thead><tr>
         <th className="sticky">Batch</th><th>Co</th><th>Date</th><th>Purchase party</th><th>Product</th><th>Port</th>
-        <th style={{textAlign:"right"}}>Deal qty</th><th style={{textAlign:"right"}}>Lifted qty</th>
+        <th style={{textAlign:"right"}}>Qty</th>
         {canSeePnl && <th style={{textAlign:"right"}}>Rate</th>}
         <th>Storage</th><th>Comments</th>
         <th>Sale date</th><th>Sale party</th>
@@ -1548,7 +1583,7 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
         <th style={{textAlign:"right"}}>{canSeePnl?"Balance / P&L":"Balance"}</th>
       </tr></thead>
       <tbody>
-        {rows.length===0 && <tr><td colSpan={canSeePnl?17:15} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>{empty}</td></tr>}
+        {rows.length===0 && <tr><td colSpan={canSeePnl?16:14} style={{padding:20,textAlign:"center",color:"var(--mute)"}}>{empty}</td></tr>}
         {rows.map(b=>{
           const sales=salesOf(deals,b.id); const isOpen=forceOpen||!!open[b.id];
           return (<Fragment key={b.id}>
@@ -1557,30 +1592,22 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
               <td className="sticky"><span style={{color:sales.length?"var(--buy)":"transparent",marginRight:4}}>{isOpen?"▾":"▸"}</span>
                 {wrongBroker(b) && <span className="bad" title="wrong broker for this book">⚑ </span>}{b.batchNo}</td>
               <td>{b.code}</td><td className="mono">{dmy(b.date)}</td>
-              <td className="wrap" title={b.party}>{shortName(b.party)}</td>
+              <td className="wrap" title={b.party}><span>{shortName(b.party)}</span></td>
               <td>{canonProduct(b.product)}</td><td>{canonPort(b.port)||b.port||"—"}</td>
-              <td className="num">{n2(b.qty)}</td>
-              {(()=>{
-                const done=sales.filter(x=>isLifted(x)).length;
-                const all=isLifted(b) && done===sales.length;
-                return (
-                  <td className={"num "+(all?"settled":"pending")}
-                    style={canEdit?{cursor:"pointer"}:{}}
-                    onClick={(e)=>{ if(canEdit&&!isLifted(b)){ e.stopPropagation(); onQuick(b); } }}
-                    title={all ? "purchase and all "+sales.length+" sale"+(sales.length===1?"":"s")+" settled"
-                      : (!isLifted(b) ? "purchase not settled — tap to confirm as booked"
-                        : done+" of "+sales.length+" sales settled")}>
-                    {n2(effQty(b))}
-                    {!all && <div className="eyebrow" style={{color:"#8A6D0B"}}>
-                      {!isLifted(b) ? "not settled" : done+"/"+sales.length+" sales"}</div>}
-                  </td>); })()}
+              <td className={"num "+(b.settled?"settled":"pending")}
+                title={b.settled ? "total actually lifted, confirmed across all "+b.saleCount+" sale"+(b.saleCount===1?"":"s")
+                  : "booked quantity — settles when every sale is confirmed"}>
+                {n2(b.shownQty)}
+                {!b.settled && <div className="eyebrow" style={{color:"#8A6D0B"}}>
+                  {b.saleCount ? b.saleSettled+"/"+b.saleCount+" settled" : "not settled"}</div>}
+              </td>
               {canSeePnl && <td className="num">{n2(b.rate)}
                 {!!(+b.comm) && <div className={"eyebrow "+(+b.comm>=0?"good":"bad")}
                   title={(+b.comm>=0?"commission receivable":"commission payable")}>
                   comm {+b.comm>=0?"+":"−"}{n2(Math.abs(+b.comm))}</div>}</td>}
-              <td className="wrap" style={{fontWeight:400}}>{b.storage||"—"}</td>
-              <td className="wrap" style={{fontWeight:400}} title={b.comments}>{b.comments||"—"}</td>
-              <td colSpan={canSeePnl?5:4} style={{fontWeight:400,color:"var(--mute)"}}>
+              <td className="wrap" style={{fontWeight:400}}><span>{b.storage||"—"}</span></td>
+              <td className="wrap" style={{fontWeight:400}} title={b.comments}><span>{b.comments||"—"}</span></td>
+              <td colSpan={canSeePnl?5:4} style={{fontWeight:400,color:"var(--mute)"}} data-x="1">
                 {sales.length? <>{sales.length+" sale"+(sales.length>1?"s":"")+" · "+n2(b.sold)+" t sold"}
                   {canSeePnl && <> · <span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span></>}
                   {isOpen?"":" — tap to open"}</> : "no sale yet"}
@@ -1599,13 +1626,11 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
             </tr>
             {isOpen && sales.map(s=>{ const m=s.rate-b.rate; return (
               <tr className="sale" key={s.id+b.id}>
-                <td className="sticky ind">↳</td><td /><td colSpan={canSeePnl?9:8} />
-                <td className="mono">{dmy(s.date)}</td><td className="wrap" title={s.party}>{shortName(s.party)}</td>
+                <td className="sticky ind">↳</td><td /><td colSpan={canSeePnl?8:7} />
+                <td className="mono">{dmy(s.date)}</td><td className="wrap" title={s.party}><span>{shortName(s.party)}</span></td>
                 <td className="num">{n2(s.booked)}</td>
                 <td className={"num "+(isLifted(s)?"settled":"pending")}
-                  style={canEdit?{cursor:"pointer"}:{}}
-                  onClick={()=>{ if(canEdit&&!isLifted(s)) onQuick(s); }}
-                  title={isLifted(s)?"actual lifted quantity":"not settled — tap to confirm as booked"}>
+                  title={isLifted(s)?"actual lifted quantity":"not settled — booked quantity is being used"}>
                   {n2(s.part)}</td>
                 {canSeePnl && <td className="num">{n2(s.rate)}</td>}
                 <td className="bal">
@@ -1718,7 +1743,12 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
   const [d,setD]=useState({...b});
   return (<>
     <h2>Batch {b.batchNo}</h2>
-    <p className="hint" style={{marginBottom:10}}>Sold {n2(b.sold)} t · balance {n2(b.balance)} t
+    <p className="hint" style={{marginBottom:10}}>
+      {b.settled
+        ? "Settled — "+n2(b.shownQty)+" t actually lifted across "+b.saleCount+" sale"+(b.saleCount===1?"":"s")
+        : "Booked "+n2(b.qty)+" t · sold "+n2(b.sold)+" t · balance "+n2(b.balance)+" t"
+          +(b.saleCount? " · "+b.saleSettled+" of "+b.saleCount+" sales settled" : "")}
+      <br/>The purchase quantity settles by itself once every sale under it is confirmed.
       <br/>{stamp(b)}</p>
     <div className="row">
       <F label="Purchase party" value={d.party} onChange={(v)=>setD({...d,party:v,seller:v})} />
@@ -1726,14 +1756,6 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
     </div>
     <div className="row" style={{marginTop:10}}>
       <F label="Deal qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
-      <div className={isLifted(d)?"lift-settled":"lift-pending"} style={{flex:"1 1 150px"}}>
-        <F label="Lifted qty (ton)" value={d.lifted??""} ph={n2(d.qty)+" — not settled"}
-          onChange={(v)=>setD({...d,lifted:v})} />
-        <div style={{display:"flex",gap:6,marginTop:5}}>
-          <button className="btn ghost small" onClick={()=>setD({...d,lifted:num(d.qty)})}>same as booked</button>
-          {isLifted(d) && <button className="btn ghost small" onClick={()=>setD({...d,lifted:""})}>clear</button>}
-        </div>
-      </div>
       <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:v})} />
       <F label="Port" value={d.port} onChange={(v)=>setD({...d,port:v})} />
     </div>
@@ -1748,7 +1770,6 @@ function BatchEdit({b,canEdit,onSave,onDelete,onClose}){
       ? <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
           <button className="btn" onClick={()=>onSave({...d,
             qty:num(d.qty), rate:num(d.rate), comm:num(d.comm),
-            lifted:String(d.lifted??"").trim()===""?"":num(d.lifted),
             product:canonProduct(d.product),port:canonPort(d.port)||d.port})}>Save</button>
           <button className="btn ghost" onClick={onClose}>Close</button>
           <button className="btn danger" onClick={onDelete}>Delete batch</button></div>
