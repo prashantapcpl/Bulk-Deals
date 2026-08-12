@@ -76,10 +76,8 @@ tr.mismatch td.sticky{box-shadow:inset 3px 0 0 var(--sell)}
 table{border-collapse:collapse;min-width:1040px;width:100%;font-size:12px}
 th{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#B7C6D2;
  background:var(--ink);padding:7px 8px;text-align:left;white-space:nowrap}
-td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;
- white-space:normal;overflow-wrap:anywhere;max-width:150px;line-height:1.35}
-td.mono,td.num,td.bal{white-space:nowrap;max-width:none}
-td.sticky{white-space:nowrap;max-width:none}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+td.wrap{white-space:normal;overflow-wrap:anywhere;max-width:150px;line-height:1.35}
 tr.batch td{background:#F2F5F8;font-weight:600;border-top:2px solid var(--ink)}
 tr.sale td{background:var(--paper);color:#31414F}
 tr.sale td.ind{padding-left:14px;color:var(--mute)}
@@ -159,7 +157,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
-const BUILD = "b10";   /* shown on the sign-in screen and in settings */
+const BUILD = "b11";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -1436,15 +1434,15 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
               <td className="sticky"><span style={{color:sales.length?"var(--buy)":"transparent",marginRight:4}}>{isOpen?"▾":"▸"}</span>
                 {wrongBroker(b) && <span className="bad" title="wrong broker for this book">⚑ </span>}{b.batchNo}</td>
               <td>{b.code}</td><td className="mono">{dmy(b.date)}</td>
-              <td title={b.party}>{shortName(b.party)}</td>
+              <td className="wrap" title={b.party}>{shortName(b.party)}</td>
               <td>{canonProduct(b.product)}</td><td>{canonPort(b.port)||b.port||"—"}</td>
               <td className="num">{n2(b.qty)}</td>
               {canSeePnl && <td className="num">{n2(b.rate)}
                 {!!(+b.comm) && <div className={"eyebrow "+(+b.comm>=0?"good":"bad")}
                   title={(+b.comm>=0?"commission receivable":"commission payable")}>
                   comm {+b.comm>=0?"+":"−"}{n2(Math.abs(+b.comm))}</div>}</td>}
-              <td style={{fontWeight:400}}>{b.storage||"—"}</td>
-              <td style={{fontWeight:400}} title={b.comments}>{b.comments||"—"}</td>
+              <td className="wrap" style={{fontWeight:400}}>{b.storage||"—"}</td>
+              <td className="wrap" style={{fontWeight:400}} title={b.comments}>{b.comments||"—"}</td>
               <td colSpan={4} style={{fontWeight:400,color:"var(--mute)"}}>
                 {sales.length? <>{sales.length+" sale"+(sales.length>1?"s":"")+" · "+n2(b.sold)+" t sold"}
                   {canSeePnl && <> · <span className={pnl(b)>=0?"good":"bad"}>{money(pnl(b))}</span></>}
@@ -1463,7 +1461,7 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
             {isOpen && sales.map(s=>{ const m=s.rate-b.rate; return (
               <tr className="sale" key={s.id+b.id}>
                 <td className="sticky ind">↳</td><td /><td colSpan={8} />
-                <td className="mono">{dmy(s.date)}</td><td title={s.party}>{shortName(s.party)}</td>
+                <td className="mono">{dmy(s.date)}</td><td className="wrap" title={s.party}>{shortName(s.party)}</td>
                 <td className="num">{n2(s.part)}</td>{canSeePnl && <td className="num">{n2(s.rate)}</td>}
                 <td className="bal">
                   {canSeePnl && <span className={m>=0?"good":"bad"}>{m>=0?"+":"−"}{n2(Math.abs(m))}</span>}
