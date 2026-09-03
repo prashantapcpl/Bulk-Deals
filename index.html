@@ -162,7 +162,7 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, Fragment } = React;
-const BUILD = "b18";   /* shown on the sign-in screen and in settings */
+const BUILD = "b21";   /* shown on the sign-in screen and in settings */
 
 /* ================= names, products, ports ================= */
 const LEGAL = ["pvt","private","ltd","limited","llp","co","company","inc","corp","the"];
@@ -306,10 +306,28 @@ function grabQty(s){
 }
 const grabRate=(s)=>num(deDev(String(s||"")).replace(/gst/gi,""));
 const rateLooksOdd=(s)=>oddDecimal(String(s||"").replace(/gst/gi,""));
+/* Our own firm is written a dozen ways — "M/S BKM SOLVENTS P LTD", "BKM Solvents Pvt Ltd",
+   "A P CHEM". Match on the distinctive words rather than demanding it word for word. */
+function ourCode(companies, name){
+  const t=normCo(name); if(!t) return "";
+  const ts=t.split(" ").filter(Boolean);
+  const hit=(companies||[]).find(c=>{
+    const x=normCo(c.name); if(!x) return false;
+    if(x===t) return true;
+    if(t.includes(x)||x.includes(t)) return true;
+    /* match on the firm's own distinctive words only — "chemicals" and "solvents"
+       are shared with half the trade, so they can never carry a match alone */
+    const marks=x.split(" ").filter(w=>w.length>1 && !GENERIC.includes(w));
+    return marks.length>0 && marks.every(w=>ts.some(u=>
+      u===w || (u.length>=3 && w.startsWith(u)) || (w.length>=3 && u.startsWith(w))));
+  });
+  return hit ? hit.code : "";
+}
+
 function parseStructured(text, companies){
   const blocks=String(text).split(/(?=sales\s*&?\s*purchase\s*confirmation)/i).filter(b=>/seller\s*:/i.test(b)||/buyer\s*:/i.test(b));
   if(!blocks.length) return null;
-  const ours=(n)=>(companies.find(c=>normCo(c.name)===normCo(n))||{}).code||"";
+  const ours=(n)=>ourCode(companies,n);
   return blocks.map(b=>{
     const seller=field(b,"seller"), buyer=field(b,"buyer");
     const q=grabQty(field(b,"qty")||field(b,"quantity"));
@@ -679,7 +697,7 @@ function App(){
       });
     } else { const l=parseLoose(text); rows=l?[l]:[]; }
     if(!rows.length){ setErr("Could not read that. Give at least party, product, quantity and rate."); return; }
-    rows=rows.map(r=>{ const own=(companies.find(c=>normCo(c.name)===normCo(r.party))||{}).code;
+    rows=rows.map(r=>{ const own=ourCode(companies,r.party);
       return own? {...r,code:own,party:""} : r; });
     const [first,...rest]=rows;
     if(first.code) setCode(first.code);
@@ -812,7 +830,8 @@ function App(){
        +5  we RECEIVE 5/kg  -> adds to profit
        -2  we PAY 2/kg      -> reduces profit
      Works the same on a purchase or a sale.  */
-  const commOf=(d,qty)=> (+d.comm||0) * (qty!==undefined?qty:effQty(d)) * 1000;
+  const commOf=(d,qty)=> (+d.comm||0) * (qty!==undefined?qty
+    : (d.shownQty!==undefined? d.shownQty : effQty(d))) * 1000;
   const commBatch=(b)=> commOf(b) + salesOf(deals,b.id).reduce((t,x)=>t+commOf(x,x.part),0);
   const margin=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
   const pnl=(b)=>margin(b)+commBatch(b);
@@ -850,17 +869,20 @@ function App(){
       .concat(canSeePnl?["Sale rate","P&L Rs"]:["Balance t"]);
     const out=[[reportTitle()].map(q).join(","),[reportSub()].map(q).join(","),"",head.map(q).join(",")];
     rows.forEach(b=>{
-      out.push(["", b.batchNo,b.code,dmy(b.date),b.party,canonProduct(b.product),canonPort(b.port)||b.port,n2(b.qty)]
+      out.push(["", b.batchNo,b.code,dmy(b.date),b.party,canonProduct(b.product),canonPort(b.port)||b.port,
+        n2(b.shownQty)+(b.settled?"":" *")]
         .slice(1).concat(canSeePnl?[n2(b.rate)]:[])
         .concat([b.storage,b.comments,"","",""])
         .concat(canSeePnl?["",""]:[n2(b.balance)]).map(q).join(","));
       salesOf(deals,b.id).forEach(x=>{
         out.push(["","","","","","",""].concat(canSeePnl?[""]:[])
-          .concat(["","",dmy(x.date),x.party,n2(x.part)])
+          .concat(["","",dmy(x.date),x.party,n2(x.part)+(isLifted(x)?"":" *")])
           .concat(canSeePnl?[n2(x.rate),Math.round((x.rate-b.rate)*x.part*1000)]:[""]).map(q).join(","));
       });
       if(canSeePnl) out.push(["","","","","","",""].concat([""]).concat(["","","","","", "", "batch total "+Math.round(pnl(b))]).map(q).join(","));
     });
+    out.push("");
+    out.push(q("* booked quantity — the actual lifted figure has not been settled yet"));
     saveFile((book?book.name.replace(/[^A-Za-z0-9]+/g,"-"):"deals")+"-"+tab+"-"+today()+".csv",
       "\ufeff"+out.join("\n"), "text/csv;charset=utf-8;");
   };
@@ -869,15 +891,15 @@ function App(){
   const downloadPdf=()=>{
     const rows=tab==="open"?open:closed;
     const esc=(v)=>String(v??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-    const totQty=rows.reduce((t,b)=>t+(+b.qty||0),0);
-    const totBuy=rows.reduce((t,b)=>t+(+b.qty||0)*1000*b.rate,0);
+    const totQty=rows.reduce((t,b)=>t+(+b.shownQty||0),0);
+    const totBuy=rows.reduce((t,b)=>t+(+b.shownQty||0)*1000*b.rate,0);
     const totPnl=rows.reduce((t,b)=>t+pnl(b),0);
     const cols = canSeePnl ? 13 : 11;
     let body="";
     rows.forEach(b=>{
       body+="<tr class='b'><td>"+esc(b.batchNo)+"</td><td>"+esc(b.code)+"</td><td>"+dmy(b.date)+"</td>"
         +"<td>"+esc(shortName(b.party))+"</td><td>"+esc(canonProduct(b.product))+"</td>"
-        +"<td>"+esc(canonPort(b.port)||b.port||"")+"</td><td class='n'>"+n2(b.qty)+"</td>"
+        +"<td>"+esc(canonPort(b.port)||b.port||"")+"</td><td class='n'>"+n2(b.shownQty)+(b.settled?"":"<span class='r'> *</span>")+"</td>"
         +(canSeePnl?"<td class='n'>"+n2(b.rate)+"</td>":"")
         +"<td colspan='3'>"+esc(b.storage||"")+"</td>"
         +"<td class='n'>"+(b.balance>0.001?n2(b.balance)+" t":"closed")+"</td>"
@@ -885,7 +907,7 @@ function App(){
       salesOf(deals,b.id).forEach(x=>{
         const m=(x.rate-b.rate)*x.part*1000;
         body+="<tr><td class='i'>&#8627;</td><td colspan='"+(canSeePnl?7:6)+"'></td>"
-          +"<td>"+dmy(x.date)+"</td><td>"+esc(shortName(x.party))+"</td><td class='n'>"+n2(x.part)+"</td>"
+          +"<td>"+dmy(x.date)+"</td><td>"+esc(shortName(x.party))+"</td><td class='n'>"+n2(x.part)+(isLifted(x)?"":"<span class='r'> *</span>")+"</td>"
           +(canSeePnl?"<td class='n'>"+n2(x.rate)+"</td><td class='n "+(m>=0?"g":"r")+"'>"+esc(money(m))+"</td>":"<td></td>")
           +"</tr>";
       });
@@ -915,7 +937,8 @@ function App(){
       +"<th colspan='3'>Storage</th><th class='n'>Balance</th>"+(canSeePnl?"<th class='n'>P&amp;L</th>":"")+"</tr>"
       +body+"</table>"
       +"<div class='ft'>Rates are Rs per kg. Profit and loss is the sale rate less the purchase rate of the batch "
-      +"the quantity came from. Generated from Bulk Deals.</div></body></html>";
+      +"the quantity came from. Quantities marked * are booked figures not yet settled at the actual lifted "
+      +"quantity. Generated from Bulk Deals.</div></body></html>";
     const f=document.createElement("iframe");
     f.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0";
     document.body.appendChild(f);
@@ -987,7 +1010,13 @@ function App(){
                 onClick={()=>setFilter(k)}>{l}</button>))}
             <button className="btn ghost small" onClick={downloadPdf}>PDF</button>
             <button className="btn ghost small" onClick={downloadExcel}>Excel</button>
-            <button className="btn ghost small" onClick={()=>setDump({kind:"csv",text:csv()})}>Backup</button>
+            <button className="btn ghost small" onClick={()=>{
+              const payload={app:"bulk-deals",version:BUILD,book:book.name,bookId,
+                exported:new Date().toISOString(),count:deals.length,deals};
+              saveFile(book.name.replace(/[^A-Za-z0-9]+/g,"-")+"-backup-"+today()+".json",
+                JSON.stringify(payload,null,1),"application/json");
+              flash("Backup downloaded — "+deals.length+" deals. Keep the file somewhere safe.");
+            }}>Backup</button>
             <span className="eyebrow">{tab==="open"? n2(inTank)+" t in tank" : closed.length+" closed"} · live</span>
           </div>
 
@@ -1373,6 +1402,7 @@ function App(){
         </div></div></div>)}
 
       {people && <People user={user} isSuper={isSuper} book={book} books={books} db={db} FB={FB} binned={binned}
+        codesInUse={[...new Set(deals.map(d=>d.code).filter(Boolean))]}
         onWipe={async()=>{
           const snap=await FB.getDocs(FB.collection(db,"books",bookId,"deals"));
           let n=0;
@@ -1386,12 +1416,13 @@ function App(){
 }
 
 /* ================= people & books ================= */
-function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSignOut,onWipe,binned}){
+function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSignOut,onWipe,binned,codesInUse}){
   const [email,setEmail]=useState(""); const [bookName,setBookName]=useState("");
   const [reName,setReName]=useState(book?book.name:""); const [newBroker,setNewBroker]=useState("");
   const [nbBroker,setNbBroker]=useState("");
   const [pCode,setPCode]=useState(""); const [pAlias,setPAlias]=useState("");
   const [wipeTxt,setWipeTxt]=useState(""); const [wiping,setWiping]=useState(false);
+  const [fCode,setFCode]=useState(""); const [fName,setFName]=useState("");
   const [c1,setC1]=useState("AO"); const [n1,setN1]=useState("Agarwal Overseas");
   const [c2,setC2]=useState("AP"); const [n2n,setN2]=useState("A P Chemicals P Ltd");
   const myEmail=(user.email||"").trim().toLowerCase();
@@ -1445,6 +1476,34 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
           <b>Enter only</b> can add deals but never sees rates or profit. <b>Enter + profit</b> sees everything and
           can take reports. <b>Admin</b> can also change and delete deals, and manage this list.
         </p>
+
+        <div className="sech">Firms in this book</div>
+        <p className="hint" style={{margin:"0 0 8px"}}>
+          The firms you trade as in {book.name}. When a confirmation is pasted, whichever of these appears as the
+          buyer marks it a purchase, and as the seller marks it a sale — so add every firm that trades in this book.</p>
+        {(book.companies||[]).map((c,i)=>{
+          const used=(codesInUse||[]).includes(c.code);
+          return (
+            <div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"7px 0",borderBottom:"1px dotted var(--line)"}}>
+              <span style={{flex:1,minWidth:0,fontSize:13}}><b>{c.code}</b>
+                <span className="eyebrow"> · {c.name}{used?" · in use":""}</span></span>
+              <button className="btn danger small" onClick={()=>{
+                if(used) return setNote(c.code+" has deals booked against it — those would be orphaned. Move or delete them first.");
+                save({companies:(book.companies||[]).filter((_,j)=>j!==i)});
+              }}>remove</button>
+            </div>);
+        })}
+        <div className="row" style={{marginTop:8}}>
+          <F label="Short code" value={fCode} ph="BKM" onChange={setFCode} />
+          <F label="Firm name" value={fName} ph="BKM Solvents P Ltd" onChange={setFName} />
+        </div>
+        <button className="btn ghost small" style={{marginTop:8}} onClick={async()=>{
+          const c=fCode.trim().toUpperCase(), nm=fName.trim();
+          if(!c||!nm) return setNote("Both a short code and a firm name are needed.");
+          if((book.companies||[]).some(x=>x.code===c)) return setNote(c+" is already a firm in this book.");
+          await save({companies:[...(book.companies||[]),{code:c,name:nm}]});
+          setFCode(""); setFName("");
+        }}>Add firm</button>
 
         <div className="sech">Book name and broker</div>
         <div className="row">
@@ -1507,6 +1566,7 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
         <div className="row" style={{marginTop:8}}>
           <F label="Code 2" value={c2} onChange={setC2} /><F label="Firm 2" value={n2n} onChange={setN2} />
         </div>
+        <p className="hint" style={{marginTop:6}}>More firms can be added afterwards in this same panel.</p>
         <button className="btn small" style={{marginTop:10}} onClick={async()=>{
           const nm=bookName.trim(); if(!nm) return setNote("Give the book a name.");
           const id=nm.toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,30)+"-"+Date.now().toString(36).slice(-4);
@@ -1522,6 +1582,29 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
       </>)}
 
       {isBookAdmin && (<>
+        <div className="sech">Restore from a backup</div>
+        <p className="hint" style={{margin:"0 0 8px"}}>
+          Pick a backup file made with the Backup button. Deals from the file are written into {book.name}:
+          a deal that already exists is overwritten with the file copy, anything new is added, and deals entered
+          after the backup are left alone.</p>
+        <input type="file" accept=".json,application/json" onChange={async(e)=>{
+          const f=e.target.files&&e.target.files[0]; if(!f) return;
+          try{
+            const data=JSON.parse(await f.text());
+            if(data.app!=="bulk-deals"||!Array.isArray(data.deals)) throw new Error("Not a Bulk Deals backup file.");
+            setNote("Restoring "+data.deals.length+" deals…");
+            let n=0;
+            for(const d of data.deals){
+              if(!d||!d.id||!d.side) continue;
+              await FB.setDoc(FB.doc(db,"books",book.id,"deals",d.id), d);
+              n++;
+            }
+            setNote("Restored "+n+" deals from "+(data.book||"backup")
+              +(data.exported?" taken on "+dmy(String(data.exported).slice(0,10)):"")+".");
+          }catch(err){ setNote("Restore failed: "+err.message); }
+          e.target.value="";
+        }} />
+
         <div className="sech" style={{borderLeftColor:"var(--sell)",color:"var(--sell)"}}>Start fresh</div>
         <p className="hint" style={{margin:"0 0 8px"}}>
           Deletes <b>every deal</b> in {book.name} — batches, sales, commission, the lot. People, brokers and
@@ -1556,7 +1639,8 @@ function People({user,isSuper,book,books,db,FB,note,setNote,onClose,onLock,onSig
 function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,brokerList}){
   const [open,setOpen]=useState({});
   const toggle=(id)=>setOpen(o=>({...o,[id]:!o[id]}));
-  const commOf=(d,qty)=> (+d.comm||0)*(qty!==undefined?qty:effQty(d))*1000;
+  const commOf=(d,qty)=> (+d.comm||0)*(qty!==undefined?qty
+    : (d.shownQty!==undefined? d.shownQty : effQty(d)))*1000;
   const commBatch=(b)=> commOf(b)+salesOf(deals,b.id).reduce((t,x)=>t+commOf(x,x.part),0);
   const margin=(b)=>salesOf(deals,b.id).reduce((t,x)=>t+(x.rate-b.rate)*x.part*1000,0);
   const pnl=(b)=>margin(b)+commBatch(b);
@@ -1638,7 +1722,8 @@ function Ledger({rows,deals,empty,onBatch,onSale,canEdit,forceOpen,canSeePnl,bro
                   {canSeePnl && !!(+s.comm) && <span className={+s.comm>=0?"good":"bad"}
                     title={(+s.comm>=0?"commission receivable ":"commission payable ")+"₹"+n2(Math.abs(+s.comm))+"/kg"}>
                     {"  comm "}{+s.comm>=0?"+":"−"}{n2(Math.abs(+s.comm))}</span>}
-                  {canEdit && <button className="iconbtn" style={{marginLeft:6}} onClick={()=>onSale(s,b.id)}>e</button>}</td>
+                  <button className="iconbtn" style={{marginLeft:6}} onClick={()=>onSale(s,b.id)}
+                    title={canEdit?"edit this sale":"settle the lifted quantity"}>e</button></td>
               </tr>); })}
           </Fragment>); })}
       </tbody>
@@ -1662,15 +1747,16 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose,
     <h2>{canEdit?"Edit sale":"Sale"}</h2>
     <p className="hint" style={{marginBottom:12}}>
       {batch? "Booked against "+batch.batchNo+" · "+shortName(batch.party)+" @ ₹"+n2(batch.rate)+"/kg" : "Not tied to any batch"}
-      <br/>{stamp(s)}</p>
+      <br/>{stamp(s)}
+      {!canEdit && <><br/><b>You can settle the actual lifted quantity below. Changing anything else needs an admin.</b></>}</p>
     {!moving && (<>
       <div className="row">
-        <F label="Sale party" value={d.party} onChange={(v)=>setD({...d,party:v,buyer:v})} />
-        <F label="Product" value={d.product} onChange={(v)=>setD({...d,product:v})} />
+        <F label="Sale party" value={d.party} onChange={(v)=>canEdit&&setD({...d,party:v,buyer:v})} />
+        <F label="Product" value={d.product} onChange={(v)=>canEdit&&setD({...d,product:v})} />
       </div>
       <div className="row" style={{marginTop:10}}>
-        <DateF label="Date" value={d.date} onChange={(v)=>setD({...d,date:v})} />
-        <F label="Deal qty (ton)" value={d.qty} onChange={(v)=>setD({...d,qty:v})} />
+        <DateF label="Date" value={d.date} onChange={(v)=>canEdit&&setD({...d,date:v})} />
+        <F label="Deal qty (ton)" value={d.qty} onChange={(v)=>canEdit&&setD({...d,qty:v})} />
         <div className={isLifted(d)?"lift-settled":"lift-pending"} style={{flex:"1 1 150px"}}>
           <F label="Lifted qty (ton)" value={d.lifted??""} ph={n2(d.qty)+" — not settled"}
             onChange={(v)=>setD({...d,lifted:v})} />
@@ -1679,10 +1765,10 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose,
             {isLifted(d) && <button className="btn ghost small" onClick={()=>setD({...d,lifted:""})}>clear</button>}
           </div>
         </div>
-        <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>setD({...d,rate:v})} />
+        <F label="Rate ₹/kg" value={d.rate} onChange={(v)=>canEdit&&setD({...d,rate:v})} />
       </div>
       {batch && <div className="row" style={{marginTop:10}}>
-        <F label={"Taken from "+batch.batchNo} value={part} onChange={setPart} /></div>}
+        <F label={"Taken from "+batch.batchNo} value={part} onChange={(v)=>canEdit&&setPart(v)} /></div>}
 
       {false && (<>
         <div className="sech">Actual quantity lifted</div>
@@ -1708,23 +1794,25 @@ function SaleEdit({s,fromId,bts,canEdit,onSave,onMove,onAttach,onDelete,onClose,
           onClick={()=>onSettle(s, batch, num(lifted), soleSale)}>Settle at this quantity</button>
       </>)}
       <div className="row" style={{marginTop:10}}>
-        <F label="Commission ₹/kg" value={d.comm||""} onChange={(v)=>setD({...d,comm:v})} />
-        <F label="Comments" value={d.comments||""} onChange={(v)=>setD({...d,comments:v})} /></div>
+        <F label="Commission ₹/kg" value={d.comm||""} onChange={(v)=>canEdit&&setD({...d,comm:v})} />
+        <F label="Comments" value={d.comments||""} onChange={(v)=>canEdit&&setD({...d,comments:v})} /></div>
       {batch && <div className="kv" style={{marginTop:10}}><span>Margin on this batch</span>
         <b className={+d.rate-batch.rate>=0?"good":"bad"}>{+d.rate-batch.rate>=0?"+":"−"}₹{n2(Math.abs(+d.rate-batch.rate))}/kg</b></div>}
-      {canEdit && <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+      <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>{
+          if(!canEdit){
+            onSave({id:d.id, lifted:String(d.lifted??"").trim()===""?"":num(d.lifted)});
+            return;
+          }
           const allocations=(d.allocations||[]).map(a=>a.batchId===fromId?{...a,qty:+part||0}:a).filter(a=>a.qty>0.0001);
           onSave({...d,qty:num(d.qty),rate:num(d.rate),comm:num(d.comm),
             lifted:String(d.lifted??"").trim()===""?"":num(d.lifted),
             product:canonProduct(d.product),allocations});
-        }}>Save</button>
-        <button className="btn ghost" onClick={()=>setMoving(true)}>{fromId?"Wrong batch — move it":"Attach to a batch"}</button>
+        }}>{canEdit?"Save":"Save lifted qty"}</button>
+        {canEdit && <button className="btn ghost" onClick={()=>setMoving(true)}>{fromId?"Wrong batch — move it":"Attach to a batch"}</button>}
         <button className="btn ghost" onClick={onClose}>Close</button>
-        <button className="btn danger" onClick={onDelete}>Delete</button>
-      </div>}
-      {!canEdit && <div style={{display:"flex",gap:8,marginTop:14}}>
-        <button className="btn ghost" onClick={onClose}>Close</button></div>}
+        {canEdit && <button className="btn danger" onClick={onDelete}>Delete</button>}
+      </div>
     </>)}
     {moving && (<>
       <p className="hint" style={{marginBottom:10}}>{fromId?"Move it into:":"Pick the batch it came out of:"}</p>
